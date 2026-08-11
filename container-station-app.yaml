@@ -1,0 +1,95 @@
+# QNAP Container Station "Application" definition -- BOTH instances in one app.
+#
+# One application, two services, both running the same image (tag:
+# security-digest) with different config mounted in. Recreating the application
+# recreates BOTH containers, so a change aimed at one briefly restarts the other
+# too; that is the trade for managing them in a single place.
+#
+# This does NOT build the image -- it runs whatever `./deploy.sh --instance
+# <name>` has already built and loaded on this NAS. Use this Application only to
+# (re)create the running containers.
+#
+# IMPORTANT: Container Station stores its own copy of this YAML. "Recreate"
+# re-reads the *stored* copy, not this file. Whenever a mount is added, removed
+# or changed here, paste the file into Container Station again -- otherwise the
+# change silently has no effect. Docker also creates a *directory* at any host
+# path a mount points to that doesn't exist, which is how a stale mount turns
+# into a mystery directory on the NAS.
+#
+# Setup (one time per instance):
+#   1. ./deploy.sh --instance <name> --skip-run
+#   2. Put its .env in place, each with its OWN DIGEST_ADMIN_TOKEN -- sharing one
+#      lets either admin panel drive the other. Generate: openssl rand -hex 32
+#   3. The container runs as a non-root user (UID 1000) and this file has no
+#      chmod step, so do it once by hand or admin saves fail with
+#      "[Errno 13] Permission denied":
+#        cd /share/Container/<name>-digest && mkdir -p data output/web prompts \
+#          && chmod -R 777 data output prompts
+#   4. ./deploy.sh --render-station (see deploy.env.example for the real qnet
+#      IPs it fills in) -- writes deploy-out/container-station-app.yaml.
+#   5. Container Station -> Applications -> Create -> paste deploy-out/
+#      container-station-app.yaml (not this file) -> Deploy.
+#
+# After every new image build: Container Station -> Applications -> Recreate.
+#
+# What is mounted, and why:
+#   config.yaml, sources.yaml, schedule.txt  read-only; deployed from the repo.
+#   topics.yaml   read-only SEED. Only used by an instance that has never run;
+#                 the live list is data/topics.yaml, written by the admin panel.
+#   data/         read-write and never touched by a deploy. Holds digest.db plus
+#                 the live topics.yaml and users.yaml. Recipients live ONLY here
+#                 -- there is deliberately no /app/users.yaml mount.
+#   prompts/      read-write: the admin panel's prompt editor writes in place.
+#   output/       read-write: rendered digest HTML for the dashboard.
+#
+# Static IPs on the qnet network. With their own LAN addresses the containers
+# are reachable directly on port 8080, so there is no `ports:` mapping.
+#
+# Do not paste this file by hand -- run `./deploy.sh --render-station` first. It
+# fills in your real qnet IPs from .deploy.env (see deploy.env.example) and
+# writes deploy-out/container-station-app.yaml; paste that instead.
+
+version: "3"
+
+services:
+  security-digest:
+    image: security-digest
+    container_name: security-digest-web
+    restart: unless-stopped
+    volumes:
+      - /share/Container/security-digest/config.yaml:/app/config.yaml:ro
+      - /share/Container/security-digest/sources.yaml:/app/sources.yaml:ro
+      - /share/Container/security-digest/topics.yaml:/app/topics.yaml:ro
+      - /share/Container/security-digest/schedule.txt:/app/schedule.txt:ro
+      - /share/Container/security-digest/data:/app/data
+      - /share/Container/security-digest/output:/app/output
+      - /share/Container/security-digest/prompts:/app/prompts
+    env_file:
+      - /share/Container/security-digest/.env
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    networks:
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: STATION_IP_SECURITY_PLACEHOLDER
+
+  news-digest:
+    image: security-digest
+    container_name: news-digest-web
+    restart: unless-stopped
+    volumes:
+      - /share/Container/news-digest/config.yaml:/app/config.yaml:ro
+      - /share/Container/news-digest/sources.yaml:/app/sources.yaml:ro
+      - /share/Container/news-digest/topics.yaml:/app/topics.yaml:ro
+      - /share/Container/news-digest/schedule.txt:/app/schedule.txt:ro
+      - /share/Container/news-digest/data:/app/data
+      - /share/Container/news-digest/output:/app/output
+      - /share/Container/news-digest/prompts:/app/prompts
+    env_file:
+      - /share/Container/news-digest/.env
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    networks:
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: STATION_IP_NEWS_PLACEHOLDER
+
+networks:
+  qnet-static-eth1-dc7e3a:
+    external: true

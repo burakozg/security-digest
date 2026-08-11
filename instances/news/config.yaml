@@ -1,0 +1,56 @@
+retry:
+  max_retries: 3
+  initial_delay: 1.0
+  max_delay: 60.0
+sources_file: sources.yaml
+topics_seed_file: topics.yaml
+schedule_file: schedule.txt
+sources:
+  max_items_per_source: 8
+  max_total_items: 150
+  max_description_chars: 2000
+  seen_retention_days: 14
+  content_dedupe: true
+  content_similarity_threshold: 0.85
+  story_dedupe: false
+  fair_trim: true
+  max_age_days: 7
+llm:
+  provider: openrouter
+  model: qwen/qwen3.7-flash
+  temperature: 0.3
+  batch_size: 8
+  categories:
+  - key
+  - notable
+  - mention
+  - exclude
+  fallback_category: mention
+  cluster: true
+digest_template:
+  title_format: '{name}''s News'
+  sections:
+  - key
+  - notable
+  - mention
+  labels:
+    key: Worth knowing
+    notable: Also happening
+    mention: Briefly
+site:
+  title: News Digest
+  tagline: Topics and entities worth following
+  icon: 📰
+web:
+  min_run_interval_minutes: 30
+history:
+  path: data/digest_history.json
+  max_entries: 10000
+delivery:
+  output: email
+  file_path: ./output/digest.md
+  email:
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    from: you@example.com
+    to: you@example.com

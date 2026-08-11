@@ -1,0 +1,9 @@
+# Topic/entity search feeds -- unused by this instance, which follows fixed RSS
+# feeds (sources.yaml) rather than tracking named entities. See
+# instances/news/topics.yaml for a populated example.
+#
+# This file is deliberately kept rather than deleted: docker-compose.yml mounts
+# topics.yaml for every instance, and bind-mounting a path that doesn't exist
+# on the host silently creates a directory there instead.
+
+topics: []

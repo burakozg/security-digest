@@ -1,0 +1,18 @@
+# Pinned, reproducible dependency snapshot -- generated from requirements-dev.in.
+# Do not hand-edit. To upgrade: edit requirements-dev.in, then regenerate with
+#   uv pip compile requirements-dev.in -o requirements-dev.txt
+#
+# Install alongside requirements.txt:
+#   .venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
+#   .venv/bin/pytest
+
+# --- Direct dependencies (from requirements-dev.in) ---
+pytest==9.1.1
+pytest-cov==7.1.0
+
+# --- Transitive dependencies (pinned for reproducibility) ---
+coverage==7.15.1
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+Pygments==2.20.0

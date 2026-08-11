@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin — Security Digest</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --bg-card: #1e293b;
+      --bg-elevated: #334155;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --success: #34d399;
+      --error: #f87171;
+      --border: #334155;
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', -apple-system, sans-serif; margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); line-height: 1.6; }
+    .page { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+    h1 { font-size: 1.5rem; margin: 0 0 32px 0; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .card { background: var(--bg-card); border-radius: var(--radius); border: 1px solid var(--border); padding: 24px; margin-bottom: 24px; }
+    .card h2 { font-size: 1.1rem; margin: 0 0 16px 0; }
+    .card p { color: var(--text-muted); font-size: 0.9rem; margin: 0 0 16px 0; }
+    .btn { font-family: inherit; padding: 10px 18px; border-radius: var(--radius-sm); font-size: 0.9rem; font-weight: 500; cursor: pointer; border: none; }
+    .btn-danger { background: rgba(248, 113, 113, 0.2); color: var(--error); }
+    .btn-danger:hover { background: rgba(248, 113, 113, 0.3); }
+    .btn-primary { background: var(--accent); color: var(--bg); }
+    .btn-primary:hover { background: #0ea5e9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .prompt-list { display: flex; flex-direction: column; gap: 8px; }
+    .prompt-item { background: var(--bg-elevated); border-radius: var(--radius-sm); overflow: hidden; }
+    .prompt-header { padding: 12px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+    .prompt-header:hover { background: var(--border); }
+    .prompt-body { padding: 16px; border-top: 1px solid var(--border); display: none; }
+    .prompt-body.open { display: block; }
+    textarea { width: 100%; min-height: 200px; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; padding: 12px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); resize: vertical; }
+    .msg { padding: 8px 12px; border-radius: var(--radius-sm); margin-top: 12px; font-size: 0.9rem; }
+    .msg.success { background: rgba(52, 211, 153, 0.2); color: var(--success); }
+    .msg.error { background: rgba(248, 113, 113, 0.2); color: var(--error); }
+    .row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 12px; }
+    .field label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px; }
+    select.llm { min-width: 100%; max-width: 100%; font-family: inherit; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+    .field-wide { flex: 1; min-width: 280px; }
+    .hint { font-size: 0.85rem; color: var(--text-muted); margin-top: 12px; }
+    code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: var(--bg); padding: 0.1em 0.35em; border-radius: 4px; }
+    .feed-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+    .feed-row { display: grid; grid-template-columns: minmax(88px, 0.75fr) minmax(100px, 1fr) minmax(160px, 1.5fr) auto; gap: 10px; align-items: center; }
+    @media (max-width: 900px) { .feed-row { grid-template-columns: 1fr 1fr; }
+      .feed-row .digest-col { grid-column: 1 / -1; }
+      .feed-row .btn-ghost { justify-self: start; }
+    }
+    @media (max-width: 640px) { .feed-row { grid-template-columns: 1fr; } }
+    .feed-row input { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; }
+    .digest-col { font-size: 0.8rem; color: var(--text-muted); line-height: 1.35; }
+    .digest-col .none { color: var(--text-muted); font-style: italic; }
+    .digest-badge { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border-radius: 4px; background: var(--bg-elevated); color: var(--text); font-size: 0.75rem; }
+    .digest-check { display: block; margin: 2px 0; font-size: 0.78rem; color: var(--text); cursor: pointer; }
+    .digest-check input { margin-right: 6px; vertical-align: middle; }
+    /* Routing table: the drop cells are the point, so they carry the only colour. */
+    .routing-table { border-collapse: collapse; font-size: 0.78rem; min-width: 100%; }
+    .routing-table th, .routing-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+    .routing-table th { color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.7rem; font-weight: 500; }
+    .routing-table td.feed-name { color: var(--text); }
+    .cell-ok { color: var(--text); }
+    .cell-drop { color: #fcd34d; }
+    .routing-summary { margin-bottom: 12px; font-size: 0.85rem; color: var(--text-muted); }
+    .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--error); border-color: rgba(248, 113, 113, 0.5); }
+    .feed-head { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    /* Recipients are read-only rows until Edit is pressed, so a stray keystroke
+       can't quietly redirect someone's mail. */
+    .user-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+    .user-row { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(160px, 1.6fr) auto auto; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
+    @media (max-width: 700px) { .user-row { grid-template-columns: 1fr 1fr; } }
+    .user-row input { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; }
+    .user-static { font-size: 0.92rem; overflow-wrap: anywhere; }
+    .user-static.email { color: var(--text-muted); }
+    .user-topics { grid-column: 1 / -1; font-size: 0.78rem; color: var(--text-muted); }
+    /* A topic is a small form, not a single line like a feed, so each one is a
+       bordered block rather than a grid row -- the context field needs room. */
+    .topic-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 16px; }
+    .topic-row { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .topic-grid { display: grid; grid-template-columns: minmax(110px, 1.1fr) minmax(110px, 1fr) 78px 78px minmax(140px, 1fr) auto; gap: 8px; align-items: center; }
+    @media (max-width: 760px) { .topic-grid { grid-template-columns: 1fr 1fr; } }
+    .topic-row select { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; }
+    .topic-row input, .topic-row textarea { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; font-family: inherit; }
+    .topic-row textarea { resize: vertical; min-height: 54px; }
+    .topic-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); display: block; margin-bottom: 3px; }
+    .feed-grid-head { display: grid; grid-template-columns: minmax(88px, 0.75fr) minmax(100px, 1fr) minmax(160px, 1.5fr) auto; gap: 10px; margin-bottom: 6px; }
+    @media (max-width: 900px) { .feed-grid-head { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Admin</h1>
+    <p><a href="/">← Back to digest</a></p>
+
+    <div class="card" id="usersCard" style="display:none">
+      <h2>Recipients</h2>
+      <p>Who receives this instance's digests. One digest is built per recipient, containing the topics addressed to them below plus every topic set to <strong>All recipients</strong>. Stored in <code>data/users.yaml</code> and edited here — there is nothing to deploy and nothing to keep in sync. A recipient with no topics gets no email at all rather than an empty one.</p>
+      <div class="user-list" id="usersContainer"></div>
+      <button type="button" class="btn btn-primary" id="addUserBtn">Add recipient</button>
+      <div id="usersMsg" class="msg" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <div class="card" id="topicsCard" style="display:none">
+      <h2>Topics</h2>
+      <p>Entities tracked by news search (Google News + Bing News). Stored in <code>data/topics.yaml</code> and edited here — there is nothing to deploy and nothing to keep in sync. Each digest in <code>config.yaml</code> lists topic <strong>names</strong> that must match the names here — the <strong>Digests</strong> column is read-only and shows which digests pick each topic up; a topic showing “—” reaches nobody. <strong>Context</strong> is what the model uses to reject same-name-different-subject results, so it is worth writing carefully.</p>
+      <div class="topic-list" id="topicsContainer"></div>
+      <button type="button" class="btn btn-primary" id="addTopicBtn">Add topic</button>
+      <button type="button" class="btn btn-primary" id="saveTopicsBtn" style="margin-left:8px">Save topics</button>
+      <div id="topicsMsg" class="msg" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <div class="card" id="sourcesCard" style="display:none">
+      <h2>RSS sources</h2>
+      <p>Feeds are saved to <code>data/sources_overrides.yaml</code> so <code>sources.yaml</code> can stay read-only. The initial list still comes from <code>sources.yaml</code> until you save here (then overrides replace the full RSS list). Tick the <strong>Digests</strong> a feed should reach — each digest's source list is derived from these ticks, so routing is set here and nowhere else. An item still has to be categorised into one of that digest's sections to arrive; the routing table below shows which combinations actually land.</p>
+      <div id="sourcesOverridesBanner" class="msg" style="display:none;margin-bottom:12px;background:rgba(251,191,36,0.12);color:#fcd34d;border:1px solid rgba(251,191,36,0.35)">
+        <strong>Overrides active.</strong> This list is from <code>data/sources_overrides.yaml</code>. New feeds you add only to <code>sources.yaml</code> on the server will not show until you discard overrides or add them here and save.
+        <button type="button" class="btn btn-ghost" id="resetSourcesOverridesBtn" style="margin-left:8px;margin-top:8px">Discard overrides — use sources.yaml</button>
+      </div>
+      <div class="feed-grid-head">
+        <span class="feed-head">Digests</span>
+        <span class="feed-head">Name</span>
+        <span class="feed-head">Feed URL</span>
+        <span></span>
+      </div>
+      <div class="feed-list" id="feedsContainer"></div>
+      <button type="button" class="btn btn-primary" id="addFeedBtn">Add feed</button>
+      <button type="button" class="btn btn-primary" id="saveFeedsBtn" style="margin-left:8px">Save sources</button>
+      <div id="feedsMsg" class="msg" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <div class="card" id="routingCard" style="display:none">
+      <h2>Routing table</h2>
+      <p>Delivery needs <strong>every</strong> filter to match, so what matters is the combination. A cell shows which digest would take an item from that feed with that <span id="routingAxisWord">value</span> — <span class="cell-drop">nowhere</span> means such an item is summarised at full cost and then discarded. Updates automatically when you save sources.</p>
+      <div id="routingWrap" style="overflow-x:auto"></div>
+      <div id="routingMsg" class="msg" style="display:none;margin-top:12px"></div>
+    </div>
+
+    <div class="card">
+      <h2>Flush seen database</h2>
+      <p>Clear the seen link store so previously processed items can be included again in the next run.</p>
+      <button id="flushBtn" class="btn btn-danger" onclick="flushDb()">Flush database</button>
+      <div id="flushMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2>AI prompts</h2>
+      <p>Edit the prompts used for categorisation and digest generation. The values below are enforced on the model's answer by the API, and set in <code>config.yaml</code> — a prompt that teaches a different name will have its answers silently replaced by the fallback, so change both together.</p>
+      <div id="vocabBox" style="margin-bottom:12px"></div>
+      <div id="vocabDrift" class="msg" style="display:none;margin-bottom:16px;background:rgba(251,191,36,0.12);color:#fcd34d;border:1px solid rgba(251,191,36,0.35)"></div>
+      <div class="prompt-list" id="promptList"></div>
+    </div>
+
+    <div class="card">
+      <h2>LLM provider &amp; model</h2>
+      <p>Choose OpenAI, Anthropic, Mistral or OpenRouter and a model. Recommended picks are grouped at the top.</p>
+      <p id="ollamaWarn" class="hint" style="display:none"></p>
+      <div class="row">
+        <div class="field">
+          <label for="llmProvider">Provider</label>
+          <select id="llmProvider" class="llm">
+            <option value="openai">OpenAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="mistral">Mistral</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+        </div>
+        <div class="field field-wide">
+          <label for="llmModel">Model <span style="font-weight:400;color:var(--text-muted)">($–$$$$ ≈ relative cost; $/1M = USD per 1M input/output tokens, approximate)</span></label>
+          <select id="llmModel" class="llm"></select>
+        </div>
+        <button id="llmSaveBtn" class="btn btn-primary" type="button">Save</button>
+      </div>
+      <div class="row">
+        <div class="field field-wide">
+          <label for="llmCustomModel">Or enter a custom model id <span style="font-weight:400;color:var(--text-muted)">(not in the list above? checked live against the provider's API when you save)</span></label>
+          <input type="text" id="llmCustomModel" placeholder="e.g. a brand-new model not in the curated list yet" style="width:100%;padding:8px 12px;border-radius:var(--radius-sm);background:var(--bg);color:var(--text);border:1px solid var(--border);font-size:0.9rem;">
+        </div>
+      </div>
+      <p class="hint">OpenAI: <code>OPENAI_API_KEY</code> in <code>.env</code>. Anthropic: <code>ANTHROPIC_API_KEY</code>. Mistral: <code>MISTRAL_API_KEY</code>. OpenRouter: <code>OPENROUTER_API_KEY</code>. Saving writes <code>data/llm_overrides.yaml</code> so <code>config.yaml</code> can stay read-only.</p>
+      <div id="llmMsg"></div>
+    </div>
+  </div>
+
+  <script>
+    let llmCatalog = [];
+
+    function getAdminToken(forcePrompt) {
+      let t = localStorage.getItem('digestAdminToken');
+      if (!t || forcePrompt) {
+        t = (prompt('Enter admin token (from DIGEST_ADMIN_TOKEN in .env):') || '').trim();
+        if (t) localStorage.setItem('digestAdminToken', t);
+      }
+      return t || '';
+    }
+
+    async function adminFetch(url, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({}, opts.headers, { 'X-Admin-Token': getAdminToken(false) });
+      let r = await fetch(url, opts);
+      if (r.status === 401) {
+        localStorage.removeItem('digestAdminToken');
+        const t = getAdminToken(true);
+        if (t) {
+          opts.headers['X-Admin-Token'] = t;
+          r = await fetch(url, opts);
+        }
+      }
+      return r;
+    }
+
+    function escAttr(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    function priceLabel(m) {
+      const tier = Math.min(4, Math.max(1, Number(m.price_tier) || 1));
+      const signs = '$'.repeat(tier);
+      const inp = m.input_usd_per_mtok;
+      const out = m.output_usd_per_mtok;
+      if (inp == null || out == null) return { text: `${m.label}  ${signs}`, tip: '' };
+      const tip = 'Approximate list price (USD) per 1 million input and output tokens; confirm on the provider’s pricing page — rates change.';
+      return { text: `${m.label}  ${signs}  ·  $${inp}/$${out} per 1M in/out`, tip };
+    }
+
+    function buildModelOptions(provider) {
+      const sel = document.getElementById('llmModel');
+      const entries = llmCatalog.filter(m => m.provider === provider);
+      const rec = entries.filter(m => m.recommended);
+      const other = entries.filter(m => !m.recommended);
+      const opt = (m) => {
+        const { text, tip } = priceLabel(m);
+        return `<option value="${escAttr(m.id)}" title="${escAttr(tip)}">${escAttr(text)}</option>`;
+      };
+      let html = '<optgroup label="Recommended">';
+      rec.forEach(m => { html += opt(m); });
+      html += '</optgroup><optgroup label="Other">';
+      other.forEach(m => { html += opt(m); });
+      html += '</optgroup>';
+      sel.innerHTML = html;
+    }
+
+    async function loadLlm() {
+      const r = await adminFetch('/admin/llm');
+      const data = await r.json();
+      llmCatalog = data.models || [];
+      const prov = document.getElementById('llmProvider');
+      const warn = document.getElementById('ollamaWarn');
+      if (data.provider === 'ollama') {
+        warn.style.display = 'block';
+        warn.textContent = 'Active provider is ollama (set in config.yaml). Saving here switches to OpenAI, Anthropic, Mistral or OpenRouter.';
+        prov.value = 'openai';
+      } else {
+        warn.style.display = 'none';
+        prov.value = [...prov.options].some(o => o.value === data.provider) ? data.provider : 'openai';
+      }
+      buildModelOptions(prov.value);
+      const sel = document.getElementById('llmModel');
+      if (data.model && [...sel.options].some(o => o.value === data.model)) {
+        sel.value = data.model;
+      }
+    }
+
+    document.getElementById('llmProvider').onchange = function() {
+      buildModelOptions(this.value);
+    };
+
+    document.getElementById('llmSaveBtn').onclick = async function() {
+      const msg = document.getElementById('llmMsg');
+      const btn = document.getElementById('llmSaveBtn');
+      msg.textContent = '';
+      msg.className = 'msg';
+      btn.disabled = true;
+      try {
+        const custom = document.getElementById('llmCustomModel').value.trim();
+        const model = custom || document.getElementById('llmModel').value;
+        const r = await adminFetch('/admin/llm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: document.getElementById('llmProvider').value,
+            model: model,
+          }),
+        });
+        const data = await r.json();
+        msg.textContent = data.ok ? (data.message || 'Saved.') : (data.message || data.detail || 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+        if (data.ok) {
+          document.getElementById('llmCustomModel').value = '';
+          loadLlm();
+        }
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      }
+      btn.disabled = false;
+    };
+
+    async function flushDb() {
+      const btn = document.getElementById('flushBtn');
+      const msg = document.getElementById('flushMsg');
+      if (!confirm('Clear the seen database? The next run will process all items again.')) return;
+      btn.disabled = true;
+      msg.textContent = '';
+      try {
+        const r = await adminFetch('/admin/flush', { method: 'POST' });
+        const data = await r.json();
+        msg.textContent = data.ok ? 'Database flushed.' : (data.message || data.detail || 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      }
+      btn.disabled = false;
+    }
+
+    // The values the API enforces on the model's answer. They come from
+    // config.yaml, while the prompt below is where they are explained -- so the
+    // editor has to show both or a rename in one place silently collapses every
+    // item into the fallback section.
+    function renderVocabulary(data) {
+      const box = document.getElementById('vocabBox');
+      if (!box) return;
+      const groups = [['Sections (category)', data.categories || []],
+                      ['Subject areas (domain)', data.domains || []]];
+      box.innerHTML = '';
+      groups.forEach(([label, values]) => {
+        if (!values.length) return;
+        const line = document.createElement('div');
+        line.style.marginBottom = '6px';
+        const head = document.createElement('span');
+        head.className = 'feed-head';
+        head.textContent = label + ': ';
+        line.appendChild(head);
+        values.forEach(v => {
+          const b = document.createElement('span');
+          b.className = 'digest-badge';
+          b.textContent = v;
+          line.appendChild(b);
+        });
+        box.appendChild(line);
+      });
+      const warn = document.getElementById('vocabDrift');
+      const drift = data.drift || [];
+      warn.style.display = drift.length ? 'block' : 'none';
+      warn.textContent = drift.join(' ');
+    }
+
+    async function loadPrompts() {
+      const r = await adminFetch('/admin/prompts');
+      const data = await r.json();
+      const { prompts } = data;
+      renderVocabulary(data);
+      const list = document.getElementById('promptList');
+      list.innerHTML = prompts.map(name => `
+        <div class="prompt-item" data-name="${name}">
+          <div class="prompt-header" onclick="togglePrompt('${name}')">
+            <span>${name}</span>
+            <span>▼</span>
+          </div>
+          <div class="prompt-body" id="body-${name}">
+            <textarea id="edit-${name}" rows="12"></textarea>
+            <button class="btn btn-primary" onclick="savePrompt('${name}')" style="margin-top:12px">Save</button>
+            <div id="msg-${name}" class="msg" style="display:none"></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function togglePrompt(name) {
+      const body = document.getElementById('body-' + name);
+      if (!body) return;
+      body.classList.toggle('open');
+      if (body.classList.contains('open') && !body.dataset.loaded) {
+        loadPromptContent(name);
+      }
+    }
+
+    async function loadPromptContent(name) {
+      const r = await adminFetch('/admin/prompts/' + name);
+      const data = await r.json();
+      const ta = document.getElementById('edit-' + name);
+      if (ta) ta.value = data.content || '';
+      document.getElementById('body-' + name).dataset.loaded = '1';
+    }
+
+    async function savePrompt(name) {
+      const ta = document.getElementById('edit-' + name);
+      const msgEl = document.getElementById('msg-' + name);
+      msgEl.style.display = 'block';
+      msgEl.textContent = '';
+      msgEl.className = 'msg';
+      try {
+        const r = await adminFetch('/admin/prompts/' + name, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: ta.value }),
+        });
+        const data = await r.json();
+        msgEl.textContent = data.ok ? 'Saved.' : (data.message || data.detail || 'Error');
+        msgEl.className = 'msg ' + (data.ok ? 'success' : 'error');
+      } catch (e) {
+        msgEl.textContent = e.message || 'Request failed';
+        msgEl.className = 'msg error';
+      }
+    }
+
+    // Every digest this instance can route to, filled by loadFeeds().
+    let ALL_DIGESTS = [];
+
+    function collectFeedsFromDom() {
+      const rows = document.querySelectorAll('#feedsContainer .feed-row');
+      const rss = [];
+      rows.forEach(row => {
+        const name = row.querySelector('[data-field=name]');
+        const url = row.querySelector('[data-field=url]');
+        if (!name || !url) return;
+        const digests = Array.from(row.querySelectorAll('[data-field=digest]:checked'))
+                             .map(cb => cb.value);
+        rss.push({ name: name.value, url: url.value, digests: digests });
+      });
+      return rss;
+    }
+
+    // Read-only badges. Still used by the Topics card, whose digests are derived
+    // from recipients and are not the feed routing this file also edits.
+    function renderDigestCol(labels) {
+      const col = document.createElement('div');
+      col.className = 'digest-col';
+      if (!labels || labels.length === 0) {
+        const span = document.createElement('span');
+        span.className = 'none';
+        span.textContent = '—';
+        col.appendChild(span);
+        return col;
+      }
+      labels.forEach((lab) => {
+        const b = document.createElement('span');
+        b.className = 'digest-badge';
+        b.textContent = lab;
+        col.appendChild(b);
+      });
+      return col;
+    }
+
+    // One checkbox per digest, for the feed rows. A feed with none ticked is
+    // fetched and delivered nowhere -- allowed, but it should look like a
+    // choice, so the column says so in words rather than leaving three empty
+    // boxes to interpret.
+    function renderDigestChecks(selected) {
+      const col = document.createElement('div');
+      col.className = 'digest-col';
+      const chosen = new Set(selected || []);
+
+      if (ALL_DIGESTS.length === 0) {
+        const span = document.createElement('span');
+        span.className = 'none';
+        span.textContent = '—';
+        col.appendChild(span);
+        return col;
+      }
+
+      const note = document.createElement('span');
+      note.className = 'none';
+      note.style.display = chosen.size ? 'none' : 'block';
+      note.textContent = 'delivered nowhere';
+
+      ALL_DIGESTS.forEach((title) => {
+        const label = document.createElement('label');
+        label.className = 'digest-check';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.setAttribute('data-field', 'digest');
+        cb.value = title;
+        cb.checked = chosen.has(title);
+        cb.onchange = () => {
+          const any = col.querySelectorAll('[data-field=digest]:checked').length > 0;
+          note.style.display = any ? 'none' : 'block';
+        };
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(title));
+        col.appendChild(label);
+      });
+      col.appendChild(note);
+      return col;
+    }
+
+    function addFeedRow(name, url, digestLabels) {
+      const wrap = document.getElementById('feedsContainer');
+      const row = document.createElement('div');
+      row.className = 'feed-row';
+      row.appendChild(renderDigestChecks(digestLabels));
+      const inName = document.createElement('input');
+      inName.type = 'text';
+      inName.placeholder = 'Display name';
+      inName.setAttribute('data-field', 'name');
+      inName.value = name || '';
+      const inUrl = document.createElement('input');
+      inUrl.type = 'url';
+      inUrl.placeholder = 'https://…';
+      inUrl.setAttribute('data-field', 'url');
+      inUrl.value = url || '';
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'btn btn-ghost';
+      rm.textContent = 'Remove';
+      rm.onclick = () => row.remove();
+      row.appendChild(inName);
+      row.appendChild(inUrl);
+      row.appendChild(rm);
+      wrap.appendChild(row);
+    }
+
+    async function loadFeeds() {
+      const msg = document.getElementById('feedsMsg');
+      msg.style.display = 'none';
+      try {
+        const r = await adminFetch('/admin/sources');
+        const data = await r.json();
+        const banner = document.getElementById('sourcesOverridesBanner');
+        if (banner) banner.style.display = data.overrides_active ? 'block' : 'none';
+        const box = document.getElementById('feedsContainer');
+        box.innerHTML = '';
+        ALL_DIGESTS = data.all_digests || [];
+        const list = data.rss || [];
+        if (list.length === 0) addFeedRow('', '', []);
+        else list.forEach(f => addFeedRow(f.name, f.url, f.digests || []));
+        loadRouting();
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.textContent = e.message || 'Failed to load sources';
+        msg.className = 'msg error';
+      }
+    }
+
+    async function loadRouting() {
+      const card = document.getElementById('routingCard');
+      const wrap = document.getElementById('routingWrap');
+      const msg = document.getElementById('routingMsg');
+      msg.style.display = 'none';
+      try {
+        const r = await adminFetch('/admin/routing');
+        if (!r.ok) { card.style.display = 'none'; return; }
+        const data = await r.json();
+        const cats = data.categories || [];
+        const feeds = data.feeds || [];
+        if (cats.length === 0 || feeds.length === 0) { card.style.display = 'none'; return; }
+
+        wrap.innerHTML = '';
+
+        const summary = document.createElement('div');
+        summary.className = 'routing-summary';
+        const drops = (data.unroutable || []).length;
+        const orphans = (data.orphan_feeds || []).length;
+        summary.textContent = drops === 0
+          ? 'Every feed and category combination reaches a digest.'
+          : drops + ' of ' + (feeds.length * cats.length) + ' combinations reach no digest'
+            + (orphans ? ', including ' + orphans + ' feed(s) delivered nowhere at all' : '') + '.';
+        wrap.appendChild(summary);
+
+        const table = document.createElement('table');
+        table.className = 'routing-table';
+        const thead = document.createElement('thead');
+        const hrow = document.createElement('tr');
+        const axisWord = document.getElementById('routingAxisWord');
+        if (axisWord) axisWord.textContent = data.axis === 'domain' ? 'subject area' : 'category';
+        const corner = document.createElement('th');
+        corner.textContent = 'Feed';
+        hrow.appendChild(corner);
+        cats.forEach(c => {
+          const th = document.createElement('th');
+          th.textContent = c;
+          hrow.appendChild(th);
+        });
+        thead.appendChild(hrow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        feeds.forEach(row => {
+          const tr = document.createElement('tr');
+          const name = document.createElement('td');
+          name.className = 'feed-name';
+          name.textContent = row.feed;
+          tr.appendChild(name);
+          cats.forEach(c => {
+            const td = document.createElement('td');
+            const titles = (row.cells || {})[c] || [];
+            if (titles.length === 0) {
+              td.className = 'cell-drop';
+              td.textContent = 'nowhere';
+            } else {
+              td.className = 'cell-ok';
+              td.textContent = titles.join(', ');
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        card.style.display = 'block';
+      } catch (e) {
+        card.style.display = 'none';
+      }
+    }
+
+    document.getElementById('resetSourcesOverridesBtn').onclick = async function() {
+      if (!confirm('Remove data/sources_overrides.yaml and load feeds from sources.yaml again? (You can re-save from Admin later.)')) return;
+      const msg = document.getElementById('feedsMsg');
+      msg.style.display = 'block';
+      msg.textContent = '';
+      msg.className = 'msg';
+      try {
+        const r = await adminFetch('/admin/sources/reset-overrides', { method: 'POST' });
+        const data = await r.json();
+        msg.textContent = data.ok ? (data.message || 'Done.') : (data.message || data.detail || 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+        if (data.ok) loadFeeds();
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      }
+    };
+
+    document.getElementById('addFeedBtn').onclick = () => addFeedRow('', '', []);
+
+    document.getElementById('saveFeedsBtn').onclick = async function() {
+      const msg = document.getElementById('feedsMsg');
+      const btn = document.getElementById('saveFeedsBtn');
+      msg.style.display = 'block';
+      msg.textContent = '';
+      msg.className = 'msg';
+      btn.disabled = true;
+      try {
+        const r = await adminFetch('/admin/sources', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rss: collectFeedsFromDom() }),
+        });
+        const data = await r.json();
+        msg.textContent = data.ok ? (data.message || 'Saved.') : (data.message || data.detail || 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+        if (data.ok) loadFeeds();
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      }
+      btn.disabled = false;
+    };
+
+    // Recipients -----------------------------------------------------------
+    // Kept in memory so Edit/Remove act on a list, and so the Topics card's
+    // dropdown can be rebuilt without a second fetch.
+    let USERS = [];
+
+    function renderUsers() {
+      const box = document.getElementById('usersContainer');
+      box.innerHTML = '';
+      if (USERS.length === 0) {
+        const empty = document.createElement('p');
+        empty.style.color = 'var(--text-muted)';
+        empty.textContent = 'No recipients yet — nothing will be delivered. Add one below.';
+        box.appendChild(empty);
+      }
+      USERS.forEach((u, idx) => box.appendChild(userRow(u, idx)));
+    }
+
+    function userRow(u, idx) {
+      const row = document.createElement('div');
+      row.className = 'user-row';
+
+      if (u.editing) {
+        const name = document.createElement('input');
+        name.type = 'text'; name.placeholder = 'Name'; name.value = u.name || '';
+        const email = document.createElement('input');
+        email.type = 'email'; email.placeholder = 'name@example.com'; email.value = u.email || '';
+        const save = document.createElement('button');
+        save.type = 'button'; save.className = 'btn btn-primary'; save.textContent = 'Save';
+        save.onclick = () => {
+          USERS[idx] = { name: name.value.trim(), email: email.value.trim(), topics: u.topics || [] };
+          persistUsers();
+        };
+        const cancel = document.createElement('button');
+        cancel.type = 'button'; cancel.className = 'btn btn-ghost'; cancel.textContent = 'Cancel';
+        cancel.onclick = () => {
+          // A cancelled brand-new row has nothing to revert to, so drop it.
+          if (u.isNew) USERS.splice(idx, 1); else delete USERS[idx].editing;
+          renderUsers();
+        };
+        row.appendChild(name); row.appendChild(email);
+        row.appendChild(save); row.appendChild(cancel);
+        return row;
+      }
+
+      const name = document.createElement('div');
+      name.className = 'user-static';
+      name.textContent = u.name || '(no name)';
+      const email = document.createElement('div');
+      email.className = 'user-static email';
+      email.textContent = u.email || '';
+      const edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'btn btn-ghost'; edit.textContent = 'Edit';
+      edit.onclick = () => { USERS[idx].editing = true; renderUsers(); };
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'btn btn-ghost'; remove.textContent = 'Remove';
+      remove.onclick = () => {
+        if (!confirm('Remove ' + (u.name || u.email) + '? Topics addressed only to them will stop being delivered.')) return;
+        USERS.splice(idx, 1);
+        persistUsers();
+      };
+      row.appendChild(name); row.appendChild(email);
+      row.appendChild(edit); row.appendChild(remove);
+
+      const topics = document.createElement('div');
+      topics.className = 'user-topics';
+      topics.textContent = (u.topics && u.topics.length)
+        ? 'Receives: ' + u.topics.join(', ')
+        : 'Receives nothing yet — assign topics below.';
+      row.appendChild(topics);
+      return row;
+    }
+
+    async function persistUsers() {
+      const msg = document.getElementById('usersMsg');
+      msg.style.display = 'block';
+      msg.textContent = '';
+      msg.className = 'msg';
+      const payload = USERS.map(u => ({ name: u.name, email: u.email }));
+      try {
+        const r = await adminFetch('/admin/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ users: payload }),
+        });
+        const data = await r.json();
+        msg.textContent = data.ok ? (data.message || 'Saved.') : (data.message || data.detail || 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+        // Reload both cards: recipients changed, so the topic dropdowns and the
+        // per-user topic lists are both stale.
+        if (data.ok) { await loadUsers(); await loadTopics(); }
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      }
+    }
+
+    async function loadUsers() {
+      const msg = document.getElementById('usersMsg');
+      try {
+        const r = await adminFetch('/admin/users');
+        const data = await r.json();
+        USERS = (data.users || []).map(u => ({ name: u.name, email: u.email, topics: u.topics || [] }));
+        renderUsers();
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.textContent = e.message || 'Failed to load recipients';
+        msg.className = 'msg error';
+      }
+    }
+
+    document.getElementById('addUserBtn').onclick = function() {
+      USERS.push({ name: '', email: '', topics: [], editing: true, isNew: true });
+      renderUsers();
+    };
+
+    function addTopicRow(t) {
+      t = t || {};
+      const wrap = document.getElementById('topicsContainer');
+      const row = document.createElement('div');
+      row.className = 'topic-row';
+
+      const grid = document.createElement('div');
+      grid.className = 'topic-grid';
+
+      function field(label, key, value, placeholder, type) {
+        const cell = document.createElement('div');
+        const lab = document.createElement('span');
+        lab.className = 'topic-label';
+        lab.textContent = label;
+        const input = document.createElement(type === 'textarea' ? 'textarea' : 'input');
+        if (type !== 'textarea') input.type = 'text';
+        input.setAttribute('data-field', key);
+        input.placeholder = placeholder || '';
+        input.value = value || '';
+        cell.appendChild(lab);
+        cell.appendChild(input);
+        return cell;
+      }
+
+      grid.appendChild(field('Name', 'name', t.name, 'e.g. Vattenfall'));
+      grid.appendChild(field('Queries (one per line)', 'queries',
+        (t.queries || []).join('\n'), '"Vattenfall"', 'textarea'));
+      grid.appendChild(field('Lang', 'lang', t.lang, 'sv'));
+      grid.appendChild(field('Country', 'country', t.country, 'SE'));
+
+      // Send to -- the field that decides who this topic reaches.
+      const sendCell = document.createElement('div');
+      const sendLab = document.createElement('span');
+      sendLab.className = 'topic-label';
+      sendLab.textContent = 'Send to';
+      const select = document.createElement('select');
+      select.setAttribute('data-field', 'recipient');
+      const optAll = document.createElement('option');
+      optAll.value = 'all';
+      optAll.textContent = 'All recipients';
+      select.appendChild(optAll);
+      USERS.forEach((u) => {
+        const o = document.createElement('option');
+        o.value = u.email;
+        o.textContent = u.name ? (u.name + ' (' + u.email + ')') : u.email;
+        select.appendChild(o);
+      });
+      const current = (t.recipient || 'all');
+      // A topic pointing at a removed recipient must not silently snap to "all"
+      // -- that would mail it to everyone. Keep the stale value visible instead.
+      if (current !== 'all' && !USERS.some(u => u.email === current)) {
+        const o = document.createElement('option');
+        o.value = current;
+        o.textContent = current + ' — unknown recipient';
+        select.appendChild(o);
+      }
+      select.value = current;
+      sendCell.appendChild(sendLab);
+      sendCell.appendChild(select);
+      grid.appendChild(sendCell);
+
+      const rmCell = document.createElement('div');
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'btn btn-ghost';
+      rm.textContent = 'Remove';
+      rm.onclick = () => row.remove();
+      rmCell.appendChild(rm);
+      grid.appendChild(rmCell);
+      row.appendChild(grid);
+
+      row.appendChild(field('Context — what this topic is, and which look-alike results to reject',
+        'context', t.context, 'The Swedish state-owned energy company. Not share price or analyst ratings.', 'textarea'));
+
+      const digests = document.createElement('div');
+      digests.className = 'digest-col';
+      digests.appendChild(document.createTextNode('Digests: '));
+      digests.appendChild(renderDigestCol(t.digests));
+      row.appendChild(digests);
+
+      wrap.appendChild(row);
+    }
+
+    function collectTopicsFromDom() {
+      const rows = document.querySelectorAll('#topicsContainer .topic-row');
+      const out = [];
+      rows.forEach((row) => {
+        const get = (k) => {
+          const el = row.querySelector('[data-field="' + k + '"]');
+          return el ? el.value.trim() : '';
+        };
+        const name = get('name');
+        // Skip wholly blank rows so an untouched "Add topic" click isn't an error.
+        if (!name && !get('queries') && !get('context')) return;
+        out.push({
+          name: name,
+          queries: get('queries').split('\n').map(s => s.trim()).filter(Boolean),
+          context: get('context'),
+          lang: get('lang'),
+          country: get('country'),
+          recipient: get('recipient') || 'all',
+        });
+      });
+      return out;
+    }
+
+    async function loadTopics() {
+      const msg = document.getElementById('topicsMsg');
+      msg.style.display = 'none';
+      try {
+        const r = await adminFetch('/admin/topics');
+        const data = await r.json();
+        const box = document.getElementById('topicsContainer');
+        box.innerHTML = '';
+        const list = data.topics || [];
+        if (list.length === 0) addTopicRow({});
+        else list.forEach(addTopicRow);
+      } catch (e) {
+        msg.style.display = 'block';
+        msg.textContent = e.message || 'Failed to load topics';
+        msg.className = 'msg error';
+      }
+    }
+
+    document.getElementById('addTopicBtn').onclick = () => addTopicRow({});
+
+    document.getElementById('saveTopicsBtn').onclick = async function() {
+      const msg = document.getElementById('topicsMsg');
+      const btn = document.getElementById('saveTopicsBtn');
+      const topics = collectTopicsFromDom();
+      msg.style.display = 'block';
+      msg.textContent = '';
+      msg.className = 'msg';
+      if (topics.length === 0 &&
+          !confirm('Save an empty topic list? Every topic-based digest on this instance would stop producing items.')) {
+        msg.style.display = 'none';
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await adminFetch('/admin/topics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topics: topics }),
+        });
+        const data = await r.json();
+        msg.textContent = data.ok ? (data.message || 'Saved.') : (data.message || data.detail || 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+        if (data.ok) loadTopics();
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      }
+      btn.disabled = false;
+    };
+
+    // Ask which cards this instance actually uses before loading anything: a
+    // feed digest has no recipients or topics, a topic tracker has no feeds, and
+    // rendering a card that can do nothing here is clutter on every visit.
+    async function initPanel() {
+      let show = { recipients: true, topics: true, feeds: true };
+      try {
+        const r = await adminFetch('/admin/panel');
+        if (r.ok) show = Object.assign(show, await r.json());
+      } catch (e) { /* on failure show everything rather than hide a working card */ }
+
+      document.getElementById('usersCard').style.display = show.recipients ? 'block' : 'none';
+      document.getElementById('topicsCard').style.display = show.topics ? 'block' : 'none';
+      document.getElementById('sourcesCard').style.display = show.feeds ? 'block' : 'none';
+
+      if (show.feeds) loadFeeds();
+      // Recipients first: the Topics card's "Send to" dropdown is built from USERS.
+      if (show.recipients) await loadUsers();
+      if (show.topics) loadTopics();
+    }
+
+    loadLlm();
+    initPanel();
+    loadPrompts();
+
+    // Page title follows the instance's configured name (see /api/site).
+    fetch('/api/site').then(r => r.ok ? r.json() : null).then(s => {
+      if (s && s.title) document.title = 'Admin — ' + s.title;
+    }).catch(() => {});
+  </script>
+</body>
+</html>

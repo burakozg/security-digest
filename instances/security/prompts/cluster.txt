@@ -1,0 +1,3 @@
+# Clustering prompt -- unused by this instance (llm.cluster is off, so items are
+# summarised one-to-one by summarise_batch.txt). Kept because the deploy scripts
+# sync a fixed list of prompt files for every instance.

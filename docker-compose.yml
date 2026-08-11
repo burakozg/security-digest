@@ -1,0 +1,51 @@
+services:
+  # One image, many instances. Which instance a run uses comes from INSTANCE
+  # (default "security"), e.g.:
+  #   INSTANCE=news PORT=8081 docker compose up web
+  # Each instance owns its config, feed and topic lists, prompts, data and
+  # output under instances/<name>/; the container always sees them flat at
+  # /app (DIGEST_ROOT=/app, set in the Dockerfile).
+  #
+  # Every instance ships sources.yaml and topics.yaml even when one is an
+  # empty stub -- Compose has no conditional mounts, and bind-mounting a path
+  # that doesn't exist on the host silently creates a *directory* there, which
+  # load_config would then fail to parse.
+  #
+  # The container runs as a non-root user; each instance's data, output and
+  # prompts must be writable by it regardless of which host user created them:
+  #   mkdir -p instances/news/{data,output/web}
+  #   chmod -R 777 instances/news/{data,output,prompts}
+  #
+  # prompts/ is read-write (unlike config.yaml/sources.yaml/topics.yaml/
+  # schedule.txt, which are read-only): the admin panel's prompt editor writes
+  # straight to prompts/*.txt in place, there's no separate override file.
+  #
+  # Manual one-off runs only: `docker compose run --rm digest`.
+  # Don't `docker compose up digest` alongside `web` -- the web service's
+  # built-in APScheduler is the single production scheduler (see schedule.txt).
+  digest:
+    build: .
+    env_file: instances/${INSTANCE:-security}/.env
+    volumes:
+      - ./instances/${INSTANCE:-security}/config.yaml:/app/config.yaml:ro
+      - ./instances/${INSTANCE:-security}/sources.yaml:/app/sources.yaml
+      - ./instances/${INSTANCE:-security}/topics.yaml:/app/topics.yaml
+      - ./instances/${INSTANCE:-security}/schedule.txt:/app/schedule.txt
+      - ./instances/${INSTANCE:-security}/data:/app/data
+      - ./instances/${INSTANCE:-security}/output:/app/output
+      - ./instances/${INSTANCE:-security}/prompts:/app/prompts
+
+  web:
+    build: .
+    env_file: instances/${INSTANCE:-security}/.env
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./instances/${INSTANCE:-security}/config.yaml:/app/config.yaml:ro
+      - ./instances/${INSTANCE:-security}/sources.yaml:/app/sources.yaml
+      - ./instances/${INSTANCE:-security}/topics.yaml:/app/topics.yaml
+      - ./instances/${INSTANCE:-security}/schedule.txt:/app/schedule.txt
+      - ./instances/${INSTANCE:-security}/data:/app/data
+      - ./instances/${INSTANCE:-security}/output:/app/output
+      - ./instances/${INSTANCE:-security}/prompts:/app/prompts
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080

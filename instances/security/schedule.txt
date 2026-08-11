@@ -1,0 +1,7 @@
+# Fetch time - edit this file to change when the digest runs
+# Format: key=value, one per line. Lines starting with # are ignored.
+
+enabled=true
+hour=7
+minute=0
+timezone=Europe/Stockholm

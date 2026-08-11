@@ -1,0 +1,72 @@
+retry:
+  max_retries: 3
+  initial_delay: 1.0
+  max_delay: 60.0
+sources_file: sources.yaml
+schedule_file: schedule.txt
+sources:
+  max_items_per_source: 20
+  max_total_items: 50
+  max_description_chars: 5000
+  seen_store: data/seen.json
+  seen_retention_days: 14
+  content_dedupe: true
+  content_similarity_threshold: 0.85
+llm:
+  provider: openrouter
+  model: qwen/qwen3.7-flash
+  temperature: 0.3
+  batch_size: 8
+  # Two independent judgements per item. `categories` is the section it sits in;
+  # `domains` is the subject area, which is what decides the digest now that all
+  # three share one section list. Keeping them in one field would deliver an item
+  # to every digest whose feeds include its source -- the same story twice.
+  categories:
+  - news
+  - thought_leadership
+  - methods
+  - other
+  - exclude
+  fallback_category: other
+  domains:
+  - security
+  - ai_security
+  - ai_ml
+  fallback_domain: security
+# `sources:` is deliberately absent -- each feed names its digests in
+# sources.yaml and the lists are derived from that (see src/routing.py). Adding
+# an explicit sources: back here overrides the feeds and warns at load time.
+digests:
+- title: Security Digest
+  domain: security
+  sections: &sections
+  - news
+  - thought_leadership
+  - methods
+  - other
+  labels: &labels
+    news: News & updates
+    thought_leadership: Thought leadership
+    methods: New methods & approaches
+    other: Other
+- title: AI Security Digest
+  domain: ai_security
+  sections: *sections
+  labels: *labels
+- title: AI News
+  domain: ai_ml
+  sections: *sections
+  labels: *labels
+web:
+  min_run_interval_minutes: 30
+history:
+  path: data/digest_history.json
+  max_entries: 10000
+delivery:
+  output: email
+  file_path: ./output/digest.md
+  email:
+    smtp_host: smtp.gmail.com
+    smtp_port: 587
+    from: you@example.com
+    to: you@example.com

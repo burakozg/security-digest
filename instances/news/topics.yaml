@@ -1,0 +1,45 @@
+# SEED topic list: this populates a brand-new instance and is then INERT.
+#
+# Once the instance has run, the live list is data/topics.yaml on the target,
+# which the admin panel's Topics card writes directly. Editing this file and
+# deploying will NOT change a running instance -- use the panel. This copy exists
+# so a fresh deployment starts with something sensible, and so the `context`
+# prose (the field that does the relevance work) is versioned in git.
+#
+# Fields:
+#   name      Required. The label a digest routes on and the heading readers see.
+#   queries   Search strings. Defaults to [name]. Quote a phrase to keep it
+#             together ('"Ny Teknik"'), otherwise the engines match the words
+#             separately and relevance collapses.
+#   context   What this topic actually is, and which near-misses to reject. This
+#             is the single most important field: it's what the model uses to
+#             tell a real hit from a same-name-different-subject one.
+#   lang      Content language, default en. Must match the language the topic is
+#             actually written about.
+#   country   Market, default US.
+#   window    Google recency filter, default "when:2d".
+#   engines   Default [google, bing].
+#   recipient Email of the user who receives this topic, or "all" for everyone.
+#             Absent means "all".
+
+topics:
+  - name: Vattenfall
+    queries: ['"Vattenfall"']
+    context: >
+      The Swedish state-owned energy company: nuclear, wind, grid, electricity
+      pricing, and its corporate and political decisions. Not general Swedish
+      energy-policy stories that merely mention it in passing, and not share
+      price or analyst-rating items.
+    lang: sv
+    country: SE
+    recipient: all
+
+  - name: Nvidia
+    queries: ['"Nvidia"']
+    context: >
+      Nvidia the company: chips, data-centre and AI hardware, supply, major
+      customers and partnerships, regulation. Not stock-price moves, analyst
+      ratings or "best GPU to buy" buying guides.
+    lang: en
+    country: US
+    recipient: all

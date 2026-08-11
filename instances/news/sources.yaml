@@ -1,0 +1,11 @@
+# Ordinary publisher RSS feeds. This instance tracks topics (topics.yaml) rather
+# than following fixed publications, so the list is empty -- but add feeds here
+# if a reader wants a specific publication followed wholesale alongside their
+# topics. A feed added here is routed by name in config.yaml's digests, exactly
+# like a topic.
+#
+# Kept rather than deleted: docker-compose.yml mounts sources.yaml for every
+# instance, and bind-mounting a path that doesn't exist on the host silently
+# creates a directory there instead.
+
+rss: []

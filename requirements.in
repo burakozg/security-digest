@@ -1,0 +1,41 @@
+# =============================================================================
+# How to install these dependencies
+# =============================================================================
+#
+# This is the source file -- edit this, then regenerate the pinned
+# requirements.txt with:
+#   uv pip compile requirements.in -o requirements.txt
+#
+# pipx is for standalone CLI tools (one isolated app per install). It does NOT
+# replace "pip install -r requirements.txt" for this whole project. Use one of:
+#
+# --- A) Recommended: project virtualenv (same as pip) ---
+#   python3 -m venv .venv
+#   .venv/bin/python -m pip install -r requirements.txt
+#   .venv/bin/uvicorn src.web.app:app --reload --port 8080
+#   .venv/bin/python -m src.main
+#
+# --- B) pipx: put all libraries into uvicorn’s pipx environment, then run from repo root ---
+#   pipx install uvicorn
+#   pipx inject uvicorn -r requirements.txt
+#   cd /path/to/security-digest
+#   uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+#   python3 -m src.main          # still use system/venv python for the pipeline
+#
+#   (pipx 1.5+ supports: pipx inject <app> -r requirements.txt)
+#
+# --- C) pipx + run without global inject (one-off) ---
+#   pipx run --spec 'uvicorn[standard]' uvicorn --help   # not ideal for this repo
+#
+# =============================================================================
+
+feedparser>=6.0.0
+httpx>=0.27.0
+PyYAML>=6.0
+openai>=1.0.0
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+markdown>=3.5.0
+fastapi>=0.115.0
+uvicorn>=0.32.0
+apscheduler>=3.10.0

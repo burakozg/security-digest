@@ -1,0 +1,10 @@
+# Fetch time - edit this file to change when the digest runs
+# Format: key=value, one per line. Lines starting with # are ignored.
+#
+# One run produces every digest in config.yaml, so all readers of this instance
+# share this time.
+
+enabled=true
+hour=7
+minute=30
+timezone=Europe/Stockholm

@@ -1,0 +1,18 @@
+.env
+instances/*/.env
+
+# Local deploy config (real NAS host/IPs — see deploy.env.example)
+.deploy.env
+deploy-out/
+.venv/
+data/
+output/
+instances/*/data/
+instances/*/output/
+*.tar
+.DS_Store
+__pycache__/
+*.pyc
+.claude/settings.local.json
+.coverage
+.pytest_cache/

@@ -1,0 +1,68 @@
+# RSS feeds - edit this file to add/remove sources.
+#
+# `digests:` lists the digests a feed is ALLOWED to reach. It is a restriction,
+# not an assignment: what actually decides where an item goes is the `domain`
+# the model assigns it (security / ai_security / ai_ml), matched against each
+# digest's own domain. All three digests carry the same four sections, so the
+# section cannot route -- see src/routing.py.
+#
+# Every feed is therefore open to all three by default. Untick a digest here
+# (or in the admin panel) only to say "never send this feed's items there" --
+# and know that doing so silently discards anything the model assigns to that
+# domain. A feed with `digests: []` is fetched and delivered nowhere at all.
+
+rss:
+  # === General security ===
+  # These outlets cover AI-driven attacks constantly, and every one of those
+  # items used to be discarded unseen. The domain now sorts them.
+  - name: Krebs on Security
+    url: https://krebsonsecurity.com/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Bleeping Computer
+    url: https://www.bleepingcomputer.com/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: The Hacker News
+    url: https://feeds.feedburner.com/TheHackersNews
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: SecurityWeek
+    url: https://www.securityweek.com/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Dark Reading
+    url: https://www.darkreading.com/rss.xml
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Schneier on Security
+    url: https://www.schneier.com/blog/atom.xml
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Ars Technica Security
+    url: https://arstechnica.com/security/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Threatpost
+    url: https://threatpost.com/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: CSO Online
+    url: https://www.csoonline.com/index.rss
+    digests: [Security Digest, AI Security Digest, AI News]
+
+  # === AI security ===
+  - name: AI Sec Watch
+    url: https://aisecwatch.com/feed.xml
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: VentureBeat AI
+    url: https://venturebeat.com/category/ai/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: AISI Blog
+    url: https://raw.githubusercontent.com/alan-turing-institute/ai-rss-feeds/main/feeds/aisi-blog.xml
+    digests: [Security Digest, AI Security Digest, AI News]
+
+  # === General AI / tech ===
+  # Left open to all three: these do publish real security reporting, and the
+  # domain keeps their ordinary tech coverage out of the security digests.
+  - name: MIT Technology Review
+    url: https://www.technologyreview.com/feed/
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Ars Technica
+    url: https://feeds.arstechnica.com/arstechnica/index
+    digests: [Security Digest, AI Security Digest, AI News]
+  - name: Forbes Tech Council
+    url: https://www.forbes.com/councils/forbestechcouncil/feed/
+    digests: [Security Digest, AI Security Digest, AI News]

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>History — Security Digest</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --bg-card: #1e293b;
+      --bg-elevated: #334155;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --border: #334155;
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: 'DM Sans', -apple-system, sans-serif; margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); line-height: 1.6; }
+    .page { max-width: 960px; margin: 0 auto; padding: 32px 24px; }
+    h1 { font-size: 1.5rem; margin: 0 0 8px 0; }
+    .sub { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 24px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 24px; }
+    label { font-size: 0.85rem; color: var(--text-muted); }
+    select { font-family: inherit; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    .btn { font-family: inherit; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 0.9rem; cursor: pointer; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); }
+    .btn:hover { border-color: var(--accent); color: var(--accent); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .meta { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 8px; }
+    .usage { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 20px; margin-bottom: 20px; }
+    .usage summary { cursor: pointer; font-weight: 600; }
+    .usage table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+    .usage th, .usage td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    .usage th:first-child, .usage td:first-child { text-align: left; }
+    .usage th { color: var(--text-muted); font-weight: 500; }
+    .usage .models { color: var(--text-muted); font-size: 0.78rem; text-align: left; white-space: normal; }
+    .item { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 12px; }
+    .item h2 { font-size: 1rem; margin: 0 0 8px 0; font-weight: 600; }
+    .item h2 a { color: var(--text); }
+    .item h2 a:hover { color: var(--accent); }
+    .badge { display: inline-block; font-size: 0.75rem; padding: 2px 8px; border-radius: 4px; background: var(--bg-elevated); color: var(--text-muted); margin-right: 6px; }
+    .summary { font-size: 0.9rem; color: var(--text-muted); margin-top: 8px; }
+    .empty { text-align: center; color: var(--text-muted); padding: 48px 16px; }
+    .err { color: #f87171; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Digest history</h1>
+    <p class="sub">Items that were included when a digest was last delivered (email / file / web).</p>
+    <p><a href="/">← Back to digest</a></p>
+
+    <details id="usageBox" class="usage">
+      <summary>Token usage</summary>
+      <p class="sub" style="margin:8px 0 12px">What this instance spent on the LLM, per day. Cost is
+      estimated from the curated price list in <code>src/llm_models.py</code>, not billed &mdash; a
+      model that isn't in that list logs its tokens with no cost, marked &ldquo;partial&rdquo;.</p>
+      <div id="usageBody" class="meta">Loading&hellip;</div>
+    </details>
+
+    <div class="toolbar">
+      <label>Digest <select id="digestFilter"><option value="">All</option></select></label>
+      <button class="btn" id="applyBtn" type="button">Apply</button>
+      <span id="countLabel" class="meta"></span>
+    </div>
+    <div id="list"></div>
+    <div id="err" class="err"></div>
+    <button class="btn" id="moreBtn" type="button" style="display:none;margin-top:16px">Load more</button>
+  </div>
+
+  <script>
+    // Token usage ---------------------------------------------------------
+    function fmtInt(n) { return (n || 0).toLocaleString(); }
+
+    async function loadUsage() {
+      const box = document.getElementById('usageBody');
+      try {
+        const r = await fetch('/api/usage?days=30');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const rows = (await r.json()).daily || [];
+        if (!rows.length) { box.textContent = 'No LLM calls recorded yet.'; return; }
+
+        const totals = rows.reduce((a, d) => ({
+          i: a.i + d.input_tokens, o: a.o + d.output_tokens,
+          c: a.c + d.cost_usd, calls: a.calls + d.calls,
+          partial: a.partial || d.cost_is_partial,
+        }), { i: 0, o: 0, c: 0, calls: 0, partial: false });
+
+        const head = `<tr><th>Day</th><th>Calls</th><th>In</th><th>Out</th><th>Total</th><th>Est. cost</th></tr>`;
+        const body = rows.map(d => `<tr>
+            <td>${d.day}</td><td>${fmtInt(d.calls)}</td>
+            <td>${fmtInt(d.input_tokens)}</td><td>${fmtInt(d.output_tokens)}</td>
+            <td>${fmtInt(d.total_tokens)}</td>
+            <td>$${d.cost_usd.toFixed(4)}${d.cost_is_partial ? '<span title="some calls used a model with no listed price">*</span>' : ''}</td>
+          </tr><tr><td colspan="6" class="models">${(d.models || []).join(' · ')}</td></tr>`).join('');
+        const foot = `<tr><th>${rows.length}-day total</th><th>${fmtInt(totals.calls)}</th>
+            <th>${fmtInt(totals.i)}</th><th>${fmtInt(totals.o)}</th><th>${fmtInt(totals.i + totals.o)}</th>
+            <th>$${totals.c.toFixed(4)}${totals.partial ? '*' : ''}</th></tr>`;
+        box.innerHTML = `<table>${head}${body}${foot}</table>` +
+          (totals.partial ? '<p class="sub" style="margin-top:10px">* some calls used a model with no listed price, so the cost shown is a lower bound.</p>' : '');
+      } catch (e) {
+        box.textContent = 'Could not load usage: ' + (e.message || e);
+      }
+    }
+    document.getElementById('usageBox').addEventListener('toggle', function () {
+      if (this.open) loadUsage();
+    }, { once: false });
+
+    const LIMIT = 50;
+    let offset = 0;
+    let total = 0;
+    let digest = '';
+
+    async function loadDigests() {
+      const r = await fetch('/api/digests');
+      const digests = await r.json();
+      const sel = document.getElementById('digestFilter');
+      for (const d of digests) {
+        const opt = document.createElement('option');
+        opt.value = d.slug;
+        opt.textContent = d.title;
+        sel.appendChild(opt);
+      }
+    }
+
+    function safeLink(link) {
+      const s = String(link || '').trim();
+      return /^https?:\/\//i.test(s) ? s : '#';
+    }
+
+    function renderItem(row) {
+      const div = document.createElement('div');
+      div.className = 'item';
+      const h2 = document.createElement('h2');
+      const a = document.createElement('a');
+      a.href = safeLink(row.link);
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = row.title || 'Untitled';
+      h2.appendChild(a);
+      div.appendChild(h2);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.appendChild(document.createTextNode(row.sent_at || ''));
+      meta.appendChild(document.createTextNode(' · '));
+      meta.appendChild(document.createTextNode(row.digest_title || ''));
+      meta.appendChild(document.createTextNode(' · '));
+      meta.appendChild(document.createTextNode(row.source || ''));
+      div.appendChild(meta);
+      if (row.category) {
+        const b = document.createElement('span');
+        b.className = 'badge';
+        b.textContent = row.category;
+        div.insertBefore(b, h2);
+      }
+      if (row.summary) {
+        const p = document.createElement('div');
+        p.className = 'summary';
+        p.textContent = row.summary;
+        div.appendChild(p);
+      }
+      return div;
+    }
+
+    async function fetchPage(append) {
+      document.getElementById('err').textContent = '';
+      const moreBtn = document.getElementById('moreBtn');
+      moreBtn.disabled = true;
+      try {
+        const q = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
+        if (digest) q.set('digest', digest);
+        const r = await fetch('/api/history?' + q);
+        if (!r.ok) throw new Error('Failed to load history');
+        const data = await r.json();
+        total = data.total;
+        const list = document.getElementById('list');
+        if (!append) list.innerHTML = '';
+        if (!append && data.items.length === 0) {
+          list.innerHTML = '<div class="empty">No history yet. Run a digest with new items to build the log.</div>';
+        } else {
+          for (const row of data.items) {
+            list.appendChild(renderItem(row));
+          }
+        }
+        offset += data.items.length;
+        document.getElementById('countLabel').textContent =
+          total ? `Showing ${Math.min(offset, total)} of ${total}` : '';
+        moreBtn.style.display = offset < total ? 'inline-block' : 'none';
+      } catch (e) {
+        document.getElementById('err').textContent = e.message || 'Error';
+      }
+      moreBtn.disabled = false;
+    }
+
+    document.getElementById('applyBtn').onclick = () => {
+      digest = document.getElementById('digestFilter').value;
+      offset = 0;
+      fetchPage(false);
+    };
+    document.getElementById('moreBtn').onclick = () => fetchPage(true);
+
+    loadDigests().then(() => fetchPage(false));
+
+    // Page title follows the instance's configured name (see /api/site).
+    fetch('/api/site').then(r => r.ok ? r.json() : null).then(s => {
+      if (s && s.title) document.title = 'History — ' + s.title;
+    }).catch(() => {});
+  </script>
+</body>
+</html>
