@@ -42,6 +42,11 @@ BASE_EMAIL_CONFIG = {
 def smtp_password(monkeypatch):
     monkeypatch.setenv("SMTP_PASSWORD", "app-password")
     monkeypatch.delenv("SMTP_USER", raising=False)
+    # Cleared explicitly: load_dotenv() runs at import, so a developer with real
+    # addresses in .env would otherwise have them override every config-based
+    # expectation below -- tests that pass or fail depending on an untracked file.
+    monkeypatch.delenv("DIGEST_EMAIL_FROM", raising=False)
+    monkeypatch.delenv("DIGEST_EMAIL_TO", raising=False)
 
 
 def _recipients(config, digest_cfg=None):
@@ -90,3 +95,53 @@ def test_sender_is_not_per_digest(smtp_password):
     )
     assert from_addr == "sender@example.com"
     assert user == "sender@example.com"
+
+
+# Addresses from .env -----------------------------------------------------
+# config.yaml is committed and is pushed over the target's copy on every deploy,
+# so an address there is both published and fragile. Sanitising it for a public
+# repo left `to: you@example.com`, which the next deploy would have sent every
+# digest to.
+
+def test_env_addresses_override_config(smtp_password, monkeypatch):
+    monkeypatch.setenv("DIGEST_EMAIL_FROM", "real-sender@example.com")
+    monkeypatch.setenv("DIGEST_EMAIL_TO", "real@example.com")
+
+    _, _, from_addr, to_addrs, _, _ = _resolve_email_config(BASE_EMAIL_CONFIG)
+
+    assert from_addr == "real-sender@example.com"
+    assert to_addrs == ["real@example.com"]
+
+
+def test_a_digests_own_recipient_still_beats_the_env(smtp_password, monkeypatch):
+    """Per-digest `to:` is routing, not a default -- it must outrank the global
+    address wherever that comes from, or every reader gets everyone's digest."""
+    monkeypatch.setenv("DIGEST_EMAIL_TO", "global@example.com")
+
+    assert _recipients(BASE_EMAIL_CONFIG, {"to": "her@example.com"}) == ["her@example.com"]
+
+
+def test_env_recipients_accept_a_comma_separated_list(smtp_password, monkeypatch):
+    monkeypatch.setenv("DIGEST_EMAIL_TO", "a@example.com, b@example.com")
+
+    assert _recipients(BASE_EMAIL_CONFIG) == ["a@example.com", "b@example.com"]
+
+
+def test_config_without_addresses_works_when_the_env_supplies_them(smtp_password, monkeypatch):
+    """The shipped config.yaml carries no addresses at all now."""
+    monkeypatch.setenv("DIGEST_EMAIL_FROM", "s@example.com")
+    monkeypatch.setenv("DIGEST_EMAIL_TO", "r@example.com")
+    config = {"delivery": {"output": "email", "email": {"smtp_host": "smtp.example.com"}}}
+
+    _, _, from_addr, to_addrs, _, _ = _resolve_email_config(config)
+
+    assert (from_addr, to_addrs) == ("s@example.com", ["r@example.com"])
+
+
+def test_no_addresses_anywhere_names_the_env_vars(smtp_password):
+    """The error has to say where to put them, or the next person edits
+    config.yaml again and the deploy overwrites it again."""
+    config = {"delivery": {"output": "email", "email": {"smtp_host": "smtp.example.com"}}}
+
+    with pytest.raises(ValueError, match="DIGEST_EMAIL_FROM and DIGEST_EMAIL_TO"):
+        _resolve_email_config(config)

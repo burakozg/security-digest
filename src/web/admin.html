@@ -65,6 +65,11 @@
     .digest-badge { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border-radius: 4px; background: var(--bg-elevated); color: var(--text); font-size: 0.75rem; }
     .digest-check { display: block; margin: 2px 0; font-size: 0.78rem; color: var(--text); cursor: pointer; }
     .digest-check input { margin-right: 6px; vertical-align: middle; }
+    /* The normal case is "all digests", so it stays quiet; a restriction is the
+       thing worth seeing, and only it takes a colour. */
+    .digest-summary { font-family: inherit; font-size: 0.78rem; text-align: left; padding: 4px 0; background: none; border: none; color: var(--text-muted); cursor: pointer; }
+    .digest-summary:hover { color: var(--text); }
+    .digest-summary.is-restricted { color: #fcd34d; }
     /* Routing table: the drop cells are the point, so they carry the only colour. */
     .routing-table { border-collapse: collapse; font-size: 0.78rem; min-width: 100%; }
     .routing-table th, .routing-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
@@ -123,7 +128,7 @@
 
     <div class="card" id="sourcesCard" style="display:none">
       <h2>RSS sources</h2>
-      <p>Feeds are saved to <code>data/sources_overrides.yaml</code> so <code>sources.yaml</code> can stay read-only. The initial list still comes from <code>sources.yaml</code> until you save here (then overrides replace the full RSS list). Tick the <strong>Digests</strong> a feed should reach — each digest's source list is derived from these ticks, so routing is set here and nowhere else. An item still has to be categorised into one of that digest's sections to arrive; the routing table below shows which combinations actually land.</p>
+      <p>Feeds are saved to <code>data/sources_overrides.yaml</code> so <code>sources.yaml</code> can stay read-only. The initial list still comes from <code>sources.yaml</code> until you save here (then overrides replace the full RSS list). Feeds reach <strong>all digests</strong> by default — which digest an item actually lands in is decided by its subject area, not by the feed. Use the <strong>Digests</strong> column only to bar a feed from somewhere; anything you bar is discarded rather than redirected, so the routing table below shows the result.</p>
       <div id="sourcesOverridesBanner" class="msg" style="display:none;margin-bottom:12px;background:rgba(251,191,36,0.12);color:#fcd34d;border:1px solid rgba(251,191,36,0.35)">
         <strong>Overrides active.</strong> This list is from <code>data/sources_overrides.yaml</code>. New feeds you add only to <code>sources.yaml</code> on the server will not show until you discard overrides or add them here and save.
         <button type="button" class="btn btn-ghost" id="resetSourcesOverridesBtn" style="margin-left:8px;margin-top:8px">Discard overrides — use sources.yaml</button>
@@ -454,10 +459,11 @@
       return col;
     }
 
-    // One checkbox per digest, for the feed rows. A feed with none ticked is
-    // fetched and delivered nowhere -- allowed, but it should look like a
-    // choice, so the column says so in words rather than leaving three empty
-    // boxes to interpret.
+    // Routing is a restriction, not an assignment: the item's subject area picks
+    // the digest, and this only says which digests a feed may reach at all. Every
+    // feed is normally open to all of them, so three ticked boxes per row is 45
+    // controls all saying the same thing. Collapsed to one line that states the
+    // exception, with the boxes a click away when there is one to make.
     function renderDigestChecks(selected) {
       const col = document.createElement('div');
       col.className = 'digest-col';
@@ -471,10 +477,21 @@
         return col;
       }
 
-      const note = document.createElement('span');
-      note.className = 'none';
-      note.style.display = chosen.size ? 'none' : 'block';
-      note.textContent = 'delivered nowhere';
+      const summary = document.createElement('button');
+      summary.type = 'button';
+      summary.className = 'digest-summary';
+      const panel = document.createElement('div');
+      panel.style.display = 'none';
+
+      function refresh() {
+        const on = Array.from(panel.querySelectorAll('[data-field=digest]:checked'));
+        const restricted = on.length !== ALL_DIGESTS.length;
+        summary.textContent =
+          (on.length === ALL_DIGESTS.length ? 'All digests'
+           : on.length === 0 ? 'Delivered nowhere'
+           : on.map(cb => cb.value).join(', ')) + ' ▾';
+        summary.classList.toggle('is-restricted', restricted);
+      }
 
       ALL_DIGESTS.forEach((title) => {
         const label = document.createElement('label');
@@ -484,15 +501,18 @@
         cb.setAttribute('data-field', 'digest');
         cb.value = title;
         cb.checked = chosen.has(title);
-        cb.onchange = () => {
-          const any = col.querySelectorAll('[data-field=digest]:checked').length > 0;
-          note.style.display = any ? 'none' : 'block';
-        };
+        cb.onchange = refresh;
         label.appendChild(cb);
         label.appendChild(document.createTextNode(title));
-        col.appendChild(label);
+        panel.appendChild(label);
       });
-      col.appendChild(note);
+
+      summary.onclick = () => {
+        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+      };
+      refresh();
+      col.appendChild(summary);
+      col.appendChild(panel);
       return col;
     }
 
@@ -534,7 +554,7 @@
         box.innerHTML = '';
         ALL_DIGESTS = data.all_digests || [];
         const list = data.rss || [];
-        if (list.length === 0) addFeedRow('', '', []);
+        if (list.length === 0) addFeedRow('', '', ALL_DIGESTS);
         else list.forEach(f => addFeedRow(f.name, f.url, f.digests || []));
         loadRouting();
       } catch (e) {
@@ -633,7 +653,10 @@
       }
     };
 
-    document.getElementById('addFeedBtn').onclick = () => addFeedRow('', '', []);
+    // New feeds default to every digest: the subject area does the routing, and
+    // an empty list means "delivered nowhere", which is never what someone
+    // adding a feed meant to ask for.
+    document.getElementById('addFeedBtn').onclick = () => addFeedRow('', '', ALL_DIGESTS);
 
     document.getElementById('saveFeedsBtn').onclick = async function() {
       const msg = document.getElementById('feedsMsg');

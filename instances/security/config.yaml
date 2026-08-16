@@ -68,5 +68,6 @@ delivery:
   email:
     smtp_host: smtp.gmail.com
     smtp_port: 587
-    from: you@example.com
-    to: you@example.com
+    # Addresses live in .env (DIGEST_EMAIL_FROM / DIGEST_EMAIL_TO), not here:
+    # this file is committed and is pushed over the target's copy on every
+    # deploy, so an address written here is both published and overwritten.

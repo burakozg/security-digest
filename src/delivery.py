@@ -140,14 +140,33 @@ def _resolve_email_config(
 
     smtp_host = email_cfg.get("smtp_host", "smtp.gmail.com")
     smtp_port = int(email_cfg.get("smtp_port", 587))
-    from_addr = email_cfg.get("from", "")
-    to_addrs = (digest_cfg or {}).get("to") or email_cfg.get("to", "")
+
+    # Addresses come from .env, which is never committed and never deployed --
+    # config.yaml is a git-tracked file that gets pushed over the target's copy
+    # on every deploy, so an address written there is both published and fragile.
+    # It survived one sanitising pass for a public repo (real address -> a
+    # placeholder) which the next deploy would have pushed onto the NAS, sending
+    # every digest to you@example.com.
+    #
+    # Env wins over config, matching SMTP_USER below: the file is the fallback
+    # for a local run, the environment is the deployment's answer. A digest's own
+    # `to:` still beats both -- that is per-recipient routing, not a default.
+    from_addr = os.environ.get("DIGEST_EMAIL_FROM") or email_cfg.get("from", "")
+    to_addrs = (
+        (digest_cfg or {}).get("to")
+        or os.environ.get("DIGEST_EMAIL_TO")
+        or email_cfg.get("to", "")
+    )
 
     if isinstance(to_addrs, str):
         to_addrs = [a.strip() for a in to_addrs.split(",") if a.strip()]
 
     if not from_addr or not to_addrs:
-        raise ValueError("delivery.email.from and delivery.email.to are required")
+        raise ValueError(
+            "No email addresses configured. Set DIGEST_EMAIL_FROM and "
+            "DIGEST_EMAIL_TO in .env (preferred -- .env is neither committed nor "
+            "overwritten by a deploy), or delivery.email.from/to in config.yaml."
+        )
 
     user = os.environ.get("SMTP_USER") or email_cfg.get("smtp_user") or from_addr
     password = os.environ.get("SMTP_PASSWORD")
