@@ -106,6 +106,16 @@ class LLMConfig(_Lenient):
     model: str = "gpt-5.6-luna"
     temperature: float = 0.3
     batch_size: int = 8
+    # OpenRouter's `reasoning` control, for hybrid models that think by default
+    # (qwen3.7-flash and qwen3.8-27b among them). Off by default because it is
+    # measurably wrong for this workload, not merely expensive: on 2026-08-20,
+    # A/B runs over one identical feed pull showed thinking accounted for ~90%
+    # of output tokens on both instances while making the digest *worse* --
+    # security lost 3 vulnerability advisories and got vaguer summaries, and
+    # news excluded 27 of 33 items against 2 with thinking off. Clustering was
+    # unaffected. Set true per instance if a future model reverses that.
+    # OpenRouter-only: no other provider on this path accepts the parameter.
+    reasoning: bool = False
     # The category vocabulary this instance's prompt assigns, enforced as a JSON
     # schema enum on the response. None means the security-oriented default in
     # src/summariser.py; a topic instance overrides it with its own set.

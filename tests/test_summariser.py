@@ -1,6 +1,8 @@
 """Tests for the pure-parsing/formatting parts of src.summariser -- no LLM calls."""
 
+import httpx
 import pytest
+from openai import BadRequestError as OpenAIBadRequestError
 
 from src.summariser import (
     MISTRAL_BASE_URL,
@@ -228,6 +230,92 @@ def test_openai_request_mentions_json_when_response_format_is_used():
     assert "json" in body.lower()
     # The authored prompt must survive intact -- the nudge is an addition.
     assert "Classify these items." in body
+
+
+# `llm.reasoning` exists because qwen3.8-27b and other hybrids think by default,
+# and OpenRouter bills reasoning tokens as output -- the expensive side, and
+# uncapped on this path since it sets no max_tokens.
+
+def _reasoning_sent(client):
+    return (client.calls[0].get("extra_body") or {}).get("reasoning")
+
+
+def test_reasoning_disabled_is_sent_to_openrouter():
+    client = _CapturingOpenAI()
+    _call_llm(
+        client,
+        {"llm": {"provider": "openrouter", "model": "qwen/qwen3.8-27b", "reasoning": False}},
+        "Classify these items.", {"type": "object"},
+    )
+    assert _reasoning_sent(client) == {"enabled": False}
+
+
+def test_reasoning_enabled_is_sent_to_openrouter():
+    client = _CapturingOpenAI()
+    _call_llm(
+        client,
+        {"llm": {"provider": "openrouter", "model": "qwen/qwen3.8-27b", "reasoning": True}},
+        "Classify these items.", {"type": "object"},
+    )
+    assert _reasoning_sent(client) == {"enabled": True}
+
+
+def test_reasoning_defaults_to_disabled_on_openrouter():
+    """Off unless a config asks otherwise. Omitting the parameter is what bought
+    thinking silently: ~90% of output tokens, for a worse digest."""
+    client = _CapturingOpenAI()
+    _call_llm(client, {"llm": {"provider": "openrouter", "model": "qwen/qwen3.7-flash"}},
+              "Classify these items.", {"type": "object"})
+    assert _reasoning_sent(client) == {"enabled": False}
+
+
+def test_reasoning_is_never_sent_to_other_providers():
+    """`reasoning` is an OpenRouter extension; OpenAI and Mistral 400 on it."""
+    for provider in ("openai", "mistral"):
+        client = _CapturingOpenAI()
+        _call_llm(client, {"llm": {"provider": provider, "model": "m", "reasoning": False}},
+                  "Classify these items.", {"type": "object"})
+        assert "extra_body" not in client.calls[0], provider
+
+
+class _RejectsReasoningOnce(_CapturingOpenAI):
+    """OpenRouter fronts many vendors and not all accept `reasoning`."""
+
+    def __init__(self):
+        super().__init__()
+        outer = self
+
+        class _Completions:
+            def create(self, **kwargs):
+                outer.calls.append(dict(kwargs))
+                if "reasoning" in (kwargs.get("extra_body") or {}):
+                    raise OpenAIBadRequestError(
+                        "unknown parameter: reasoning",
+                        response=httpx.Response(400, request=httpx.Request("POST", "http://x")),
+                        body=None,
+                    )
+                msg = type("M", (), {"content": '{"category": "news"}'})()
+                return type("R", (), {
+                    "choices": [type("C", (), {"message": msg})()],
+                    "usage": None,
+                })()
+
+        self.chat = type("Chat", (), {"completions": _Completions()})()
+
+
+def test_a_model_rejecting_reasoning_drops_it_and_retries():
+    """Dropping it must not fail the call -- a 400 here would send the whole
+    batch down the per-item fallback chain for a parameter we only sent to
+    *save* money."""
+    client = _RejectsReasoningOnce()
+    out = _call_llm(
+        client,
+        {"llm": {"provider": "openrouter", "model": "qwen/qwen3.8-27b", "reasoning": False}},
+        "Classify these items.", {"type": "object"},
+    )
+    assert out == '{"category": "news"}'
+    assert len(client.calls) == 2
+    assert "extra_body" not in client.calls[1]
 
 
 # An endpoint that only enforces "valid JSON" -- OpenRouter downgrades

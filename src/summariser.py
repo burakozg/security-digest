@@ -230,12 +230,24 @@ def _drop_strict(kwargs: dict[str, Any]) -> None:
     kwargs["response_format"]["json_schema"].pop("strict", None)
 
 
+def _drop_reasoning(kwargs: dict[str, Any]) -> None:
+    extra = kwargs.get("extra_body")
+    if extra:
+        extra.pop("reasoning", None)
+    if not kwargs.get("extra_body"):
+        kwargs.pop("extra_body", None)
+
+
 # (param name, does this 400 blame that param?, how to drop it) -- see _do_openai.
 # `strict` is an OpenAI extension to json_schema; dropping it still leaves the
 # schema itself in force on endpoints that only implement the standard field.
 _OPENAI_PARAM_FALLBACKS: list[tuple[str, Any, Any]] = [
     ("temperature", lambda m: "temperature" in m and "does not support" in m, _drop_temperature),
     ("strict", lambda m: "strict" in m, _drop_strict),
+    # `reasoning` is an OpenRouter extension. It is only ever sent to OpenRouter,
+    # but OpenRouter fronts many vendors and not all of them accept it -- dropping
+    # it costs nothing here, where thinking is unwanted anyway.
+    ("reasoning", lambda m: "reasoning" in m, _drop_reasoning),
 ]
 
 
@@ -263,6 +275,7 @@ def _call_llm(
     provider = llm.get("provider", "openai")
     model = llm.get("model", "gpt-5.6-luna")
     temperature = float(llm.get("temperature", 0.3))
+    reasoning = bool(llm.get("reasoning", False))
 
     retry_cfg = config.get("retry", {})
     max_retries = retry_cfg.get("max_retries", 3)
@@ -312,6 +325,14 @@ def _call_llm(
                 "json_schema": {"name": "digest_result", "schema": schema, "strict": True},
             },
         }
+        # Hybrid models think by default, and OpenRouter bills the reasoning
+        # tokens as output -- the expensive side, and uncapped here since this
+        # path sets no max_tokens. Sent on every OpenRouter call rather than
+        # only when configured: the default is off, and leaving the parameter
+        # out is what silently bought thinking in the first place. Only
+        # OpenRouter understands it; OpenAI and Mistral would 400.
+        if provider == "openrouter":
+            kwargs["extra_body"] = {"reasoning": {"enabled": reasoning}}
         remaining = list(_OPENAI_PARAM_FALLBACKS)
         while True:
             try:

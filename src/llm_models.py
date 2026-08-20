@@ -31,6 +31,15 @@ category per item, so reasoning tokens are billed as output for no benefit
 (qwen3-30b-a3b-thinking-2507 costs $2.40/1M out against $0.13 for the flash
 instruct), and the coder/vision tunings are irrelevant to prose.
 
+qwen3.8-27b (added 2026-08-20) is the exception: it is a hybrid that thinks by
+default rather than a separate "-thinking" id, so the rule above cannot be
+applied by leaving a variant out of this list. Set ``llm.reasoning: false`` to
+disable thinking for it -- the parameter is OpenRouter-only and is plumbed
+through _call_llm in src/summariser.py. It is listed despite the price because,
+unlike qwen3.7-flash, its OpenRouter listing reports ``structured_outputs``:
+the JSON schema is enforced rather than downgraded to json_object and repaired
+afterwards by _unwrap_list/_coerce_category.
+
 ``price_tier`` is 1-4 ($ to $$$$) relative to models in this catalog.
 """
 
@@ -57,6 +66,7 @@ def catalog() -> list[dict[str, Any]]:
         {"provider": "openrouter", "id": "qwen/qwen3.7-flash", "label": "Qwen3.7 Flash", "recommended": True, "input_usd_per_mtok": 0.03, "output_usd_per_mtok": 0.13, "price_tier": 1},
         {"provider": "openrouter", "id": "google/gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite", "recommended": True, "input_usd_per_mtok": 0.10, "output_usd_per_mtok": 0.40, "price_tier": 1},
         {"provider": "openrouter", "id": "qwen/qwen3-235b-a22b-2507", "label": "Qwen3 235B A22B Instruct", "recommended": False, "input_usd_per_mtok": 0.15, "output_usd_per_mtok": 0.60, "price_tier": 1},
+        {"provider": "openrouter", "id": "qwen/qwen3.8-27b", "label": "Qwen3.8 27B", "recommended": False, "input_usd_per_mtok": 0.45, "output_usd_per_mtok": 3.20, "price_tier": 2},
         {"provider": "openrouter", "id": "deepseek/deepseek-chat-v3.1", "label": "DeepSeek V3.1", "recommended": True, "input_usd_per_mtok": 0.25, "output_usd_per_mtok": 0.95, "price_tier": 1},
         {"provider": "openrouter", "id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "recommended": False, "input_usd_per_mtok": 0.30, "output_usd_per_mtok": 2.50, "price_tier": 1},
         {"provider": "openrouter", "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5 (via OpenRouter)", "recommended": False, "input_usd_per_mtok": 1.00, "output_usd_per_mtok": 5.00, "price_tier": 1},
