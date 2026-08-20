@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -52,6 +53,19 @@ def _scheduled_run():
     _run_background(digest_slug=None)
 
 
+def _log_job_problem(event):
+    """Report a scheduled run that never happened.
+
+    Without this the only trace is APScheduler's own WARNING, which on a busy
+    instance is buried under healthcheck request logs -- so a digest that
+    silently stopped being produced looks identical to one nobody read.
+    """
+    if event.code == EVENT_JOB_MISSED:
+        log.error("Scheduled digest run was missed and did not execute")
+    else:
+        log.error("Scheduled digest run raised", exc_info=event.exception)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start scheduler on startup, stop on shutdown."""
@@ -63,7 +77,26 @@ async def lifespan(app: FastAPI):
         hour = schedule_cfg.get("hour", 7)
         minute = schedule_cfg.get("minute", 0)
         tz = schedule_cfg.get("timezone") or "UTC"
-        _scheduler.add_job(_scheduled_run, "cron", hour=hour, minute=minute, timezone=tz)
+        _scheduler.add_job(
+            _scheduled_run,
+            "cron",
+            hour=hour,
+            minute=minute,
+            timezone=tz,
+            # APScheduler's default misfire_grace_time is 1 second: if the host
+            # is loaded enough that the scheduler thread wakes even a second
+            # late, the day's digest is cancelled outright instead of running
+            # late. On a NAS sharing CPU with backup and scan jobs that happens
+            # regularly, and it costs a whole day's digest each time. A daily
+            # digest is worth running however late the wakeup was, so never
+            # treat one as too late to run.
+            misfire_grace_time=None,
+            # If several fires ever come due together (clock step, resume from
+            # suspend), produce one digest rather than a burst of them.
+            coalesce=True,
+            max_instances=1,
+        )
+        _scheduler.add_listener(_log_job_problem, EVENT_JOB_ERROR | EVENT_JOB_MISSED)
         _scheduler.start()
         log.info("Scheduler started: digest will run daily at %02d:%02d %s", hour, minute, tz)
     yield
