@@ -16,9 +16,24 @@ override always wins. This module pulls a copy of each override off the
 target (deploy.sh/deploy-native.sh SCP it down before calling this), merges
 it into the local base file, and reports what changed. After a successful
 deploy, the caller deletes the override on the target -- the freshly-pushed
-base file is now a strict superset of it, so nothing is lost by dropping it,
-and the base file is authoritative again until the next admin-panel save
-recreates an override.
+base file now covers everything the override held, so nothing is lost by
+dropping it, and the base file is authoritative again until the next
+admin-panel save recreates an override.
+
+The merge cannot be a plain union. "In the override but not in the base" is
+ambiguous: it means the panel *added* a feed, or it means the base *deleted*
+one since the last deploy. Treating it as always-added made deleting a feed
+from the git-tracked file impossible -- the deploy silently put it straight
+back, and then deleted the override, leaving no trace of why. Two dead feeds
+removed by hand on 2026-08-20 reappeared exactly this way.
+
+So sources reconciliation takes a stamp of the feed names as last deployed
+(deploy.sh keeps it on the target at data/.deployed-sources), the same trick
+the prompt files already use. A name in the stamp and in the override but no
+longer in the base was deliberately deleted, and stays deleted. A name absent
+from the stamp is a genuine panel addition and is merged in. With no stamp
+yet -- the first deploy after this change -- nothing is assumed deleted,
+which keeps the old behaviour rather than dropping feeds on a guess.
 """
 
 from __future__ import annotations
@@ -30,12 +45,27 @@ from typing import Any
 import yaml
 
 
-def merge_sources(base_path: Path, override_path: Path) -> list[str]:
+def _stamped_names(stamp_path: Path | None) -> set[str]:
+    """Feed names recorded as deployed last time, or empty if there is no stamp.
+
+    Empty means "assume nothing was deleted": without a record of what went out,
+    a missing feed cannot be told from one the panel just added, and dropping a
+    feed on that guess is the worse error of the two.
+    """
+    if stamp_path is None or not stamp_path.exists():
+        return set()
+    return {line.strip() for line in stamp_path.read_text().splitlines() if line.strip()}
+
+
+def merge_sources(
+    base_path: Path, override_path: Path, stamp_path: Path | None = None
+) -> list[str]:
     """Merge override_path's rss list into base_path's rss list, in place.
     Override entries win on name collision (an admin-panel edit to an
-    existing feed's URL is kept); entries unique to either side are kept.
-    Returns a list of human-readable change summary lines; empty if no
-    override file existed or nothing changed."""
+    existing feed's URL is kept). A feed only in the override is added --
+    unless it appears in the stamp, which makes it a deletion from the base
+    to be honoured rather than undone. Returns human-readable change summary
+    lines; empty if no override file existed or nothing changed."""
     if not override_path.exists():
         return []
 
@@ -47,6 +77,7 @@ def merge_sources(base_path: Path, override_path: Path) -> list[str]:
     if not isinstance(override_rss, list) or not override_rss:
         return []
 
+    deployed = _stamped_names(stamp_path)
     changes: list[str] = []
     merged: list[dict[str, Any]] = [dict(f) for f in base_rss if isinstance(f, dict)]
     by_name = {f.get("name"): i for i, f in enumerate(merged) if f.get("name")}
@@ -67,6 +98,12 @@ def merge_sources(base_path: Path, override_path: Path) -> list[str]:
                         else f"digests={feed.get('digests', [])}")
                 changes.append(f"  updated: {name} {what}")
                 merged[by_name[name]] = dict(feed)
+        elif name in deployed:
+            # Was deployed, is in the override, is gone from the base: deleted by
+            # hand since the last deploy. Leaving it out of `merged` is what makes
+            # the deletion stick; say so, because the override is about to be
+            # removed from the target and this is the only record of the decision.
+            changes.append(f"  removed: {name} (deleted from {base_path.name} since last deploy)")
         else:
             changes.append(f"  added:   {name} ({feed.get('url')})")
             merged.append(dict(feed))
@@ -75,11 +112,16 @@ def merge_sources(base_path: Path, override_path: Path) -> list[str]:
     if not changes:
         return []
 
-    base_doc["rss"] = merged
-    base_path.write_text(
-        yaml.dump(base_doc, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120),
-        encoding="utf-8",
-    )
+    # Report-only changes must not touch the file. A reconcile whose only finding
+    # is a removal leaves `merged` identical to what the base already holds -- the
+    # feed is gone from it already -- and rewriting would put this file through
+    # yaml.dump purely to strip its 19 lines of comments.
+    if merged != [dict(f) for f in base_rss if isinstance(f, dict)]:
+        base_doc["rss"] = merged
+        base_path.write_text(
+            yaml.dump(base_doc, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120),
+            encoding="utf-8",
+        )
     return changes
 
 
@@ -123,15 +165,19 @@ _MERGERS = {
 
 
 def _main() -> int:
-    if len(sys.argv) != 4 or sys.argv[1] not in _MERGERS:
-        print("Usage: python -m src.reconcile sources|llm <base_path> <override_path>",
+    if len(sys.argv) not in (4, 5) or sys.argv[1] not in _MERGERS:
+        print("Usage: python -m src.reconcile sources|llm <base_path> <override_path> [stamp_path]",
               file=sys.stderr)
         return 2
 
     kind, base_arg, override_arg = sys.argv[1], sys.argv[2], sys.argv[3]
     base_path, override_path = Path(base_arg), Path(override_arg)
+    stamp_path = Path(sys.argv[4]) if len(sys.argv) > 4 else None
 
-    changes = _MERGERS[kind](base_path, override_path)
+    if kind == "sources":
+        changes = merge_sources(base_path, override_path, stamp_path)
+    else:
+        changes = merge_llm(base_path, override_path)
 
     if not override_path.exists():
         print(f"[reconcile:{kind}] no override present, nothing to merge")

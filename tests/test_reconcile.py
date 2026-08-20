@@ -160,3 +160,68 @@ def test_merge_sources_folds_back_a_routing_change(tmp_path):
     assert changes, "a routing-only change must be detected"
     written = yaml.safe_load(base.read_text())
     assert written["rss"][0]["digests"] == ["Security Digest", "AI Security Digest"]
+
+
+# A feed in the override but not in the base is ambiguous: the panel added it,
+# or the base deleted it. Resolved by the stamp of what was last deployed --
+# without which two dead feeds deleted by hand on 2026-08-20 came straight back.
+
+def _setup_deletion(tmp_path, stamped):
+    base = tmp_path / "sources.yaml"
+    base.write_text(yaml.dump({"rss": [{"name": "Alive", "url": "https://a.com"}]}))
+    override = tmp_path / "sources_overrides.yaml"
+    override.write_text(yaml.dump({"rss": [
+        {"name": "Alive", "url": "https://a.com"},
+        {"name": "Dead", "url": "https://dead.com"},
+    ]}))
+    stamp = tmp_path / ".deployed-sources"
+    stamp.write_text("\n".join(stamped))
+    return base, override, stamp
+
+
+def test_feed_deleted_from_base_stays_deleted_when_it_was_deployed(tmp_path):
+    base, override, stamp = _setup_deletion(tmp_path, ["Alive", "Dead"])
+
+    changes = merge_sources(base, override, stamp)
+
+    names = [f["name"] for f in yaml.safe_load(base.read_text())["rss"]]
+    assert names == ["Alive"], "the deleted feed was put back"
+    assert any("removed" in c and "Dead" in c for c in changes), changes
+
+
+def test_feed_only_in_override_is_still_added_when_never_deployed(tmp_path):
+    """A genuine admin-panel addition must not be mistaken for a deletion."""
+    base, override, stamp = _setup_deletion(tmp_path, ["Alive"])
+
+    changes = merge_sources(base, override, stamp)
+
+    names = [f["name"] for f in yaml.safe_load(base.read_text())["rss"]]
+    assert names == ["Alive", "Dead"]
+    assert any("added" in c and "Dead" in c for c in changes), changes
+
+
+def test_without_a_stamp_nothing_is_assumed_deleted(tmp_path):
+    """First deploy after this change: no stamp exists yet, so keep the old
+    additive behaviour rather than dropping feeds on a guess."""
+    base, override, _ = _setup_deletion(tmp_path, [])
+    missing = tmp_path / "no-such-stamp"
+
+    changes = merge_sources(base, override, missing)
+
+    names = [f["name"] for f in yaml.safe_load(base.read_text())["rss"]]
+    assert names == ["Alive", "Dead"]
+    assert any("added" in c for c in changes)
+
+
+def test_removal_only_reconcile_does_not_rewrite_the_file(tmp_path):
+    """sources.yaml carries 19 lines of comments that yaml.dump would strip.
+    A reconcile whose only finding is a removal changes nothing in the file,
+    so it must not be rewritten at all."""
+    base, override, stamp = _setup_deletion(tmp_path, ["Alive", "Dead"])
+    base.write_text("# a comment worth keeping\nrss:\n  - name: Alive\n    url: https://a.com\n")
+    before = base.read_text()
+
+    changes = merge_sources(base, override, stamp)
+
+    assert any("removed" in c for c in changes)
+    assert base.read_text() == before, "file was rewritten and lost its comments"

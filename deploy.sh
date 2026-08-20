@@ -92,6 +92,11 @@ PROMPT_FILES="prompts/summarise.txt prompts/summarise_batch.txt prompts/cluster.
 # Hashes of the prompts as last deployed, kept on the target. Lives in data/
 # because that is the one directory mounted read-write on every instance.
 PROMPT_STAMP="data/.deployed-prompts"
+# Feed names as last deployed. Without it, a feed in the admin-panel override but
+# missing from sources.yaml is indistinguishable from one the panel just added,
+# so deleting a feed by hand was silently undone by the next deploy. Same trick,
+# same directory, same reason as PROMPT_STAMP above.
+SOURCES_STAMP="data/.deployed-sources"
 
 target_path() { echo "/share/Container/${1}-digest"; }
 container_name() { echo "${1}-digest-web"; }
@@ -153,7 +158,13 @@ for inst in ${INSTANCES}; do
       echo "  !! ${kind}_overrides.yaml exists on the target but could not be pulled." >&2
       echo "     Leaving it in place rather than deleting unmerged admin-panel edits." >&2
     fi
-    "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}"
+    if [ "${kind}" = sources ]; then
+      sstamp="$(mktemp -t digest-sources-stamp)"; TMP_FILES="${TMP_FILES} ${sstamp}"
+      pull_remote_file "${tp}/${SOURCES_STAMP}" "${sstamp}" || : > "${sstamp}"
+      "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}" "${sstamp}"
+    else
+      "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}"
+    fi
   done
 
   # prompts/*.txt has no base/override split -- the admin panel writes them in
@@ -232,6 +243,12 @@ for inst in ${INSTANCES}; do
   # actually on the target.
   ( cd "${dir}" && shasum -a 256 ${PROMPT_FILES} ) \
     | ssh -p "${SSH_PORT}" "${TARGET}" "cat > '${tp}/${PROMPT_STAMP}'"
+
+  # Same idea for the feed list: record the names as just pushed, so the next
+  # deploy can tell a feed deleted from sources.yaml (in the stamp, absent from
+  # the base) from one the admin panel added (in neither).
+  "${PYTHON}" -c "import sys,yaml;d=yaml.safe_load(open(sys.argv[1]))or{};print('\n'.join(f['name'] for f in (d.get('rss') or []) if isinstance(f,dict) and f.get('name')))" "${dir}/sources.yaml" \
+    | ssh -p "${SSH_PORT}" "${TARGET}" "cat > '${tp}/${SOURCES_STAMP}'"
 
   # The base files just pushed are a superset of whatever the overrides held, so
   # the overrides can go -- but only the ones we actually merged. These are
