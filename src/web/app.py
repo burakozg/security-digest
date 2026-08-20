@@ -30,6 +30,43 @@ from src.utils import PROJECT_ROOT, slug
 log = logging.getLogger(__name__)
 
 
+class _QuietLivenessProbeFilter(logging.Filter):
+    """Drop successful GET /status lines from uvicorn's access log.
+
+    /status is polled by the container healthcheck every 30s (2,880 lines a day
+    per instance) and by the dashboard every 60s, or every 3s while a run is in
+    progress. A 200 on a liveness endpoint carries no information, and the flood
+    buries the lines that do: the scheduler silently skipped the daily digest for
+    three months (16 runs) and the only trace -- one WARNING per missed run --
+    was invisible among them.
+
+    Anything that is not a plain successful GET /status still logs, so a probe
+    that starts failing is as visible as it ever was. Set
+    DIGEST_LOG_HEALTHCHECKS=1 to keep them all.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        # uvicorn.access logs '%s - "%s %s HTTP/%s" %d' with exactly these five.
+        # Anything else is a record we don't recognise: keep it rather than risk
+        # silently swallowing logs this filter was never meant to touch.
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+        _client, method, path, _http_version, status = args
+        try:
+            ok = int(status) < 400
+        except (TypeError, ValueError):
+            return True
+        return not (method == "GET" and str(path).split("?", 1)[0] == "/status" and ok)
+
+
+if os.environ.get("DIGEST_LOG_HEALTHCHECKS", "") not in ("1", "true", "yes"):
+    # Installed at import time. uvicorn applies its own dictConfig while building
+    # its Config, before it imports this module to load the app, so a filter
+    # added here survives rather than being reset by that config.
+    logging.getLogger("uvicorn.access").addFilter(_QuietLivenessProbeFilter())
+
+
 def require_admin(x_admin_token: str = Header(default="")) -> None:
     """Gate admin endpoints behind a shared token. Fails closed if unset."""
     expected = os.environ.get("DIGEST_ADMIN_TOKEN", "")
