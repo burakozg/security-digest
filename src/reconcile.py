@@ -125,11 +125,33 @@ def merge_sources(
     return changes
 
 
-def merge_llm(config_path: Path, override_path: Path) -> list[str]:
-    """Merge override_path's llm: dict into config_path's llm: block, in
-    place. Override keys win (only the ones the admin panel actually sets --
-    provider, model -- so temperature/batch_size normally come from the base
-    file untouched). Returns a list of change summary lines."""
+def _stamped_llm(stamp_path: Path | None) -> dict[str, Any] | None:
+    """The llm block as last deployed, or None if there is no stamp.
+
+    None means "assume the panel owns every key it sets", which is the
+    behaviour that predates the stamp -- the safe default, since without a
+    record there is no way to tell a panel edit from a hand edit.
+    """
+    if stamp_path is None or not stamp_path.exists():
+        return None
+    doc = yaml.safe_load(stamp_path.read_text())
+    return doc if isinstance(doc, dict) else None
+
+
+def merge_llm(
+    config_path: Path, override_path: Path, stamp_path: Path | None = None
+) -> list[str]:
+    """Merge override_path's llm: dict into config_path's llm: block, in place.
+
+    Resolved against a stamp of the block as last deployed, the same way
+    merge_sources resolves feeds. A key the panel has not touched since that
+    deploy (override value still equals the stamp) leaves the base
+    authoritative, so editing it in config.yaml -- or deleting it -- survives
+    the deploy instead of being silently reverted. A key the panel did change
+    wins, and is folded back into git as before. With no stamp, the override
+    wins outright, which is what this did before the stamp existed.
+
+    Returns a list of change summary lines."""
     if not override_path.exists():
         return []
 
@@ -140,9 +162,18 @@ def merge_llm(config_path: Path, override_path: Path) -> list[str]:
         return []
 
     base_llm = config_doc.get("llm") or {}
+    deployed = _stamped_llm(stamp_path)
     changes: list[str] = []
     merged = dict(base_llm)
     for key, value in override_llm.items():
+        # The panel has not touched this key since the last deploy, so whatever
+        # the base says now is a deliberate hand edit -- including removing it.
+        if deployed is not None and key in deployed and deployed[key] == value:
+            if key not in base_llm:
+                changes.append(f"  removed: {key} (deleted from {config_path.name} since last deploy)")
+            elif base_llm[key] != value:
+                changes.append(f"  kept:    {key}={base_llm[key]!r} (edited in {config_path.name}; panel still {value!r})")
+            continue
         if merged.get(key) != value:
             changes.append(f"  {key}: {merged.get(key)!r} -> {value!r}")
             merged[key] = value
@@ -150,11 +181,15 @@ def merge_llm(config_path: Path, override_path: Path) -> list[str]:
     if not changes:
         return []
 
-    config_doc["llm"] = merged
-    config_path.write_text(
-        yaml.dump(config_doc, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120),
-        encoding="utf-8",
-    )
+    # Same reason as merge_sources: a reconcile that only reports decisions has
+    # nothing to write, and config.yaml carries comments -- including four lines
+    # inside the llm: block itself -- that yaml.dump would strip.
+    if merged != base_llm:
+        config_doc["llm"] = merged
+        config_path.write_text(
+            yaml.dump(config_doc, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120),
+            encoding="utf-8",
+        )
     return changes
 
 
@@ -177,7 +212,7 @@ def _main() -> int:
     if kind == "sources":
         changes = merge_sources(base_path, override_path, stamp_path)
     else:
-        changes = merge_llm(base_path, override_path)
+        changes = merge_llm(base_path, override_path, stamp_path)
 
     if not override_path.exists():
         print(f"[reconcile:{kind}] no override present, nothing to merge")

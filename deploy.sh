@@ -97,6 +97,10 @@ PROMPT_STAMP="data/.deployed-prompts"
 # so deleting a feed by hand was silently undone by the next deploy. Same trick,
 # same directory, same reason as PROMPT_STAMP above.
 SOURCES_STAMP="data/.deployed-sources"
+# The llm: block as last deployed -- same purpose again, for the keys the admin
+# panel writes (provider, model). Without it the override wins unconditionally,
+# so editing or removing one of those keys in config.yaml was silently reverted.
+LLM_STAMP="data/.deployed-llm"
 
 target_path() { echo "/share/Container/${1}-digest"; }
 container_name() { echo "${1}-digest-web"; }
@@ -158,13 +162,14 @@ for inst in ${INSTANCES}; do
       echo "  !! ${kind}_overrides.yaml exists on the target but could not be pulled." >&2
       echo "     Leaving it in place rather than deleting unmerged admin-panel edits." >&2
     fi
-    if [ "${kind}" = sources ]; then
-      sstamp="$(mktemp -t digest-sources-stamp)"; TMP_FILES="${TMP_FILES} ${sstamp}"
-      pull_remote_file "${tp}/${SOURCES_STAMP}" "${sstamp}" || : > "${sstamp}"
-      "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}" "${sstamp}"
-    else
-      "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}"
-    fi
+    kstamp="$(mktemp -t digest-kind-stamp)"; TMP_FILES="${TMP_FILES} ${kstamp}"
+    remote_stamp="${SOURCES_STAMP}"; [ "${kind}" = llm ] && remote_stamp="${LLM_STAMP}"
+    # No stamp on the target yet means "assume nothing was edited by hand", which
+    # is the pre-stamp behaviour -- so an empty file here is a safe fallback, not
+    # a failure. rm it so reconcile sees a genuinely absent stamp rather than an
+    # empty one it would read as "nothing was ever deployed".
+    pull_remote_file "${tp}/${remote_stamp}" "${kstamp}" || rm -f "${kstamp}"
+    "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}" "${kstamp}"
   done
 
   # prompts/*.txt has no base/override split -- the admin panel writes them in
@@ -249,6 +254,10 @@ for inst in ${INSTANCES}; do
   # the base) from one the admin panel added (in neither).
   "${PYTHON}" -c "import sys,yaml;d=yaml.safe_load(open(sys.argv[1]))or{};print('\n'.join(f['name'] for f in (d.get('rss') or []) if isinstance(f,dict) and f.get('name')))" "${dir}/sources.yaml" \
     | ssh -p "${SSH_PORT}" "${TARGET}" "cat > '${tp}/${SOURCES_STAMP}'"
+
+  # And the llm: block as pushed, for the same comparison next time.
+  "${PYTHON}" -c "import sys,yaml;d=yaml.safe_load(open(sys.argv[1]))or{};print(yaml.dump(d.get('llm') or {}, default_flow_style=False, sort_keys=False), end='')" "${dir}/config.yaml" \
+    | ssh -p "${SSH_PORT}" "${TARGET}" "cat > '${tp}/${LLM_STAMP}'"
 
   # The base files just pushed are a superset of whatever the overrides held, so
   # the overrides can go -- but only the ones we actually merged. These are

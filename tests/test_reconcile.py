@@ -225,3 +225,89 @@ def test_removal_only_reconcile_does_not_rewrite_the_file(tmp_path):
 
     assert any("removed" in c for c in changes)
     assert base.read_text() == before, "file was rewritten and lost its comments"
+
+
+# merge_llm had the same shape as merge_sources: the override won every key it
+# set, so editing or deleting provider/model in config.yaml was reverted by the
+# next deploy. Resolved against a stamp of the block as last deployed.
+
+def _llm_case(tmp_path, base_llm, override_llm, stamped):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(yaml.dump({"llm": base_llm, "retry": {"max_retries": 3}}))
+    override = tmp_path / "llm_overrides.yaml"
+    override.write_text(yaml.dump({"llm": override_llm}))
+    stamp = tmp_path / ".deployed-llm"
+    if stamped is not None:
+        stamp.write_text(yaml.dump(stamped))
+    return cfg, override, stamp
+
+
+def test_llm_key_edited_by_hand_survives_when_panel_did_not_change_it(tmp_path):
+    cfg, override, stamp = _llm_case(
+        tmp_path,
+        base_llm={"provider": "openrouter", "model": "qwen/qwen3.8-27b"},
+        override_llm={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+        stamped={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+    )
+
+    changes = merge_llm(cfg, override, stamp)
+
+    assert yaml.safe_load(cfg.read_text())["llm"]["model"] == "qwen/qwen3.8-27b"
+    assert any("kept" in c and "model" in c for c in changes), changes
+
+
+def test_llm_key_deleted_by_hand_stays_deleted(tmp_path):
+    cfg, override, stamp = _llm_case(
+        tmp_path,
+        base_llm={"provider": "openrouter"},
+        override_llm={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+        stamped={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+    )
+
+    changes = merge_llm(cfg, override, stamp)
+
+    assert "model" not in yaml.safe_load(cfg.read_text())["llm"]
+    assert any("removed" in c and "model" in c for c in changes), changes
+
+
+def test_llm_key_changed_in_the_panel_still_wins(tmp_path):
+    """The feature's original purpose: a panel edit must be folded back to git."""
+    cfg, override, stamp = _llm_case(
+        tmp_path,
+        base_llm={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+        override_llm={"provider": "openrouter", "model": "deepseek/deepseek-chat-v3.1"},
+        stamped={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+    )
+
+    changes = merge_llm(cfg, override, stamp)
+
+    assert yaml.safe_load(cfg.read_text())["llm"]["model"] == "deepseek/deepseek-chat-v3.1"
+    assert any("->" in c for c in changes), changes
+
+
+def test_llm_without_a_stamp_keeps_the_old_override_wins_behaviour(tmp_path):
+    cfg, override, _ = _llm_case(
+        tmp_path,
+        base_llm={"provider": "openrouter", "model": "qwen/qwen3.8-27b"},
+        override_llm={"provider": "openrouter", "model": "qwen/qwen3.7-flash"},
+        stamped=None,
+    )
+
+    merge_llm(cfg, override, tmp_path / "no-such-stamp")
+
+    assert yaml.safe_load(cfg.read_text())["llm"]["model"] == "qwen/qwen3.7-flash"
+
+
+def test_llm_report_only_reconcile_does_not_strip_config_comments(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("llm:\n  # four lines of explanation live in the real file\n  provider: openrouter\n")
+    override = tmp_path / "llm_overrides.yaml"
+    override.write_text(yaml.dump({"llm": {"provider": "openrouter", "model": "gone"}}))
+    stamp = tmp_path / ".deployed-llm"
+    stamp.write_text(yaml.dump({"provider": "openrouter", "model": "gone"}))
+    before = cfg.read_text()
+
+    changes = merge_llm(cfg, override, stamp)
+
+    assert any("removed" in c for c in changes)
+    assert cfg.read_text() == before, "config.yaml was rewritten and lost its comments"
