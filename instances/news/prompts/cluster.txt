@@ -25,6 +25,11 @@ nearly identical:
 - Separate corporate steps that happen to concern one project ("secures funding for the
   factory" vs "establishes a subsidiary to run the factory").
 - Different reporting periods, quarters or figures.
+- Several stories that merely share a subject area. A broad topic returns assorted news
+  about one field, and a field is not an event. "Massachusetts enacts AI safety rules",
+  "Meta adds parental controls" and "New York funds women in AI" are three events that
+  happen to be about AI policy -- not one "US AI regulation landscape". Grouping by
+  theme buries every one of them.
 When you are unsure whether two items are one event, keep them separate. A duplicate
 that survives is a minor annoyance; two distinct events merged means the reader never
 learns about one of them.
@@ -32,6 +37,15 @@ learns about one of them.
 For each cluster provide:
 - title: a neutral headline for the event in your own words, not a copy of any one
   outlet's. Lead with the substance. No outlet name, no quotation marks.
+  Say what happened: a title is a statement about an occurrence, not a label for a
+  subject. If the only honest title for a group is a heading of the kind a report
+  section would carry -- "... Landscape", "Emerging Trends in ...", "Global ...
+  Frameworks", anything joined by "and" covering several unrelated developments --
+  then it is a theme rather than an event, and the group must be split until each
+  part can be titled by what actually happened. This applies just as much to a
+  leftovers cluster: never sweep assorted unrelated items into one "commentary",
+  "roundup" or "trends" group. An item reporting no event of its own either stands
+  alone as its own cluster or is exclude.
 - summary: 1-2 sentences, plain and factual, saying what happened and why it matters to
   someone following this topic. Where the reports add up to more than any one of them
   (funding amount from one, structure from another), combine them.
@@ -42,10 +56,15 @@ For each cluster provide:
   - mention: on-subject but little actually happened — brief references, roundups,
     opinion pieces reporting nothing new.
   - exclude: not actually about this topic (a different entity sharing the name, or the
-    topic named only in passing); share price moves, analyst ratings and market
-    commentary; buying guides and deals; press releases and marketing copy; topic
-    landing pages, tag pages and article indexes rather than individual stories.
-    Cluster the irrelevant items too and mark them exclude — do not leave them out.
+    topic named only in passing). TOPIC CONTEXT states the scope, and an item outside
+    it is exclude even when it matches the topic's words: a context reading "from
+    Korea" excludes the identical story about another country, because a query like
+    "ai regulation" returns the whole world's. Also exclude share price moves,
+    analyst ratings and market commentary; buying guides and deals; press releases
+    and marketing copy; topic landing pages, tag pages and article indexes rather
+    than individual stories.
+    An irrelevant item still needs an index in the output: give it a cluster of its
+    own and mark that exclude. Never pool several of them into one shared cluster.
 
 EVERY item's INDEX must appear in exactly one cluster. Do not omit an index and do not
 repeat one. Copy the numbers from the INDEX lines exactly; do not renumber them.
