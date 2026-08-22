@@ -28,7 +28,9 @@
     a:hover { text-decoration: underline; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 24px; }
     label { font-size: 0.85rem; color: var(--text-muted); }
-    select { font-family: inherit; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    select, input[type=search] { font-family: inherit; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    input[type=search] { min-width: 240px; }
+    input[type=search]:focus { outline: none; border-color: var(--accent); }
     .btn { font-family: inherit; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 0.9rem; cursor: pointer; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); }
     .btn:hover { border-color: var(--accent); color: var(--accent); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -66,6 +68,7 @@
 
     <div class="toolbar">
       <label>Digest <select id="digestFilter"><option value="">All</option></select></label>
+      <label>Search <input type="search" id="searchInput" placeholder="title, summary or source"></label>
       <button class="btn" id="applyBtn" type="button">Apply</button>
       <span id="countLabel" class="meta"></span>
     </div>
@@ -116,6 +119,7 @@
     let offset = 0;
     let total = 0;
     let digest = '';
+    let search = '';
 
     async function loadDigests() {
       const r = await fetch('/api/digests');
@@ -175,6 +179,7 @@
       try {
         const q = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
         if (digest) q.set('digest', digest);
+        if (search) q.set('q', search);
         const r = await fetch('/api/history?' + q);
         if (!r.ok) throw new Error('Failed to load history');
         const data = await r.json();
@@ -182,7 +187,14 @@
         const list = document.getElementById('list');
         if (!append) list.innerHTML = '';
         if (!append && data.items.length === 0) {
-          list.innerHTML = '<div class="empty">No history yet. Run a digest with new items to build the log.</div>';
+          // "Nothing matched" and "nothing recorded yet" are different answers;
+          // showing the second one to someone who just searched reads as a bug.
+          const blank = document.createElement('div');
+          blank.className = 'empty';
+          blank.textContent = (search || digest)
+            ? 'No items match this search.'
+            : 'No history yet. Run a digest with new items to build the log.';
+          list.appendChild(blank);
         } else {
           for (const row of data.items) {
             list.appendChild(renderItem(row));
@@ -198,11 +210,19 @@
       moreBtn.disabled = false;
     }
 
-    document.getElementById('applyBtn').onclick = () => {
+    function applyFilters() {
       digest = document.getElementById('digestFilter').value;
+      search = document.getElementById('searchInput').value.trim();
       offset = 0;
       fetchPage(false);
-    };
+    }
+    document.getElementById('applyBtn').onclick = applyFilters;
+    // Enter in the search box does what the button does -- typing a term and
+    // pressing return is the reflex, and a bare <input> in a form-less page
+    // would otherwise do nothing at all.
+    document.getElementById('searchInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); applyFilters(); }
+    });
     document.getElementById('moreBtn').onclick = () => fetchPage(true);
 
     loadDigests().then(() => fetchPage(false));

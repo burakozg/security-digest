@@ -182,11 +182,19 @@ def api_history(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     digest: str | None = Query(None),
+    q: str | None = Query(None, max_length=200),
 ):
-    """Paginated digest item history (newest first)."""
+    """Paginated digest item history (newest first).
+
+    `q` matches title, summary and source; every whitespace-separated word must
+    appear somewhere. It composes with `digest` rather than replacing it, and
+    `total` is the count after both are applied."""
     config = _load_config()
-    items, total = load_entries(config, limit=limit, offset=offset, digest_slug=digest)
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    items, total = load_entries(
+        config, limit=limit, offset=offset, digest_slug=digest, query=q
+    )
+    # Echoed so a client can tell which search a slow response belongs to.
+    return {"items": items, "total": total, "limit": limit, "offset": offset, "query": q or ""}
 
 
 @app.get("/api/site")

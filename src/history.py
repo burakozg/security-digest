@@ -16,6 +16,11 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MAX_ENTRIES = 10000
 
+# Cap on search terms taken from one query. Each term costs three LIKE
+# comparisons, so a pasted paragraph would otherwise build a statement with
+# hundreds of them against every row.
+MAX_QUERY_TERMS = 10
+
 _LEGACY_JSON_PATH = PROJECT_ROOT / "data" / "digest_history.json"
 
 _SCHEMA = """
@@ -122,33 +127,68 @@ def record_sent(
         conn.close()
 
 
+_COLUMNS = "sent_at, digest_title, digest_slug, title, link, source, summary, category"
+
+# Searched fields: the three that carry meaning to someone looking for a past
+# item. `link` is deliberately excluded -- a URL fragment matching would return
+# items whose visible text has nothing to do with the term.
+_SEARCH_COLUMNS = ("title", "summary", "source")
+
+
+def _like_escape(term: str) -> str:
+    """Neutralise LIKE wildcards in a user's term.
+
+    Without this a search for "50%" matches "50" followed by anything, and "a_b"
+    matches "axb" -- results the person typing them would call wrong. The
+    backslash must be doubled first, or it would escape the escapes.
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _filters(digest_slug: str | None, query: str | None) -> tuple[str, list[Any]]:
+    """Build the WHERE clause shared by the count and the page query.
+
+    Every term must appear in at least one searched column, and terms are
+    AND-ed, so "naver saudi" finds the story whichever way round the outlet
+    wrote the headline. An empty or whitespace-only query contributes nothing,
+    which is what keeps the unfiltered path identical to what it was.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if digest_slug:
+        clauses.append("digest_slug = ?")
+        params.append(digest_slug)
+    for term in (query or "").split()[:MAX_QUERY_TERMS]:
+        clauses.append(
+            "(" + " OR ".join(f"{col} LIKE ? ESCAPE '\\'" for col in _SEARCH_COLUMNS) + ")"
+        )
+        params += [f"%{_like_escape(term)}%"] * len(_SEARCH_COLUMNS)
+    return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+
 def load_entries(
     config: dict[str, Any] | None = None,
     limit: int = 200,
     offset: int = 0,
     digest_slug: str | None = None,
+    query: str | None = None,
     db_path: Path | str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Return newest-first slice and total matching count."""
+    """Return newest-first slice and total matching count.
+
+    `total` is the count *after* filtering, which is what lets the page's
+    "Showing N of M" and its Load more button walk the filtered set."""
+    where, params = _filters(digest_slug, query)
     conn = get_connection(db_path)
     try:
         _ensure_schema(conn)
-        if digest_slug:
-            total = conn.execute(
-                "SELECT COUNT(*) FROM history WHERE digest_slug = ?", (digest_slug,)
-            ).fetchone()[0]
-            rows = conn.execute(
-                "SELECT sent_at, digest_title, digest_slug, title, link, source, summary, category "
-                "FROM history WHERE digest_slug = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-                (digest_slug, limit, offset),
-            ).fetchall()
-        else:
-            total = conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
-            rows = conn.execute(
-                "SELECT sent_at, digest_title, digest_slug, title, link, source, summary, category "
-                "FROM history ORDER BY id DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
+        # `where` is assembled from literal fragments only -- every user-supplied
+        # value reaches SQLite through a ? placeholder, never through the f-string.
+        total = conn.execute(f"SELECT COUNT(*) FROM history{where}", params).fetchone()[0]
+        rows = conn.execute(
+            f"SELECT {_COLUMNS} FROM history{where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
     finally:
         conn.close()
 
