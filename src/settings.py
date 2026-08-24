@@ -108,6 +108,10 @@ class SourcesConfig(_Lenient):
     # carry recent posts); topic instances need it because news search returns
     # results of any age. See fetcher._drop_stale.
     max_age_days: int | None = None
+    # How stale a feed's newest entry may be before the admin panel's Status
+    # column calls it quiet. Read at display time, so changing it re-reads what
+    # is already recorded rather than needing a fresh run. See src/feed_health.py.
+    quiet_after_days: int = 21
     rss: list[RssFeed] = []
     # Generated from topics.yaml at load time, not written by hand.
     topic_feeds: list[RssFeed] = []

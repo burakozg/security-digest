@@ -25,3 +25,19 @@ def isolate_legacy_json_migration(tmp_path, monkeypatch):
     monkeypatch.setattr(src.dedupe, "_LEGACY_JSON_PATH", tmp_path / "_no_legacy_seen.json")
     monkeypatch.setattr(src.status, "_LEGACY_JSON_PATH", tmp_path / "_no_legacy_status.json")
     monkeypatch.setattr(src.history, "_LEGACY_JSON_PATH", tmp_path / "_no_legacy_history.json")
+
+
+@pytest.fixture(autouse=True)
+def isolate_default_db(tmp_path, monkeypatch):
+    """Point src.db.DB_PATH at a throwaway file for every test.
+
+    Most callers pass db_path explicitly, but not all of them can: fetch_all()
+    records feed health as a side effect, with no db_path to thread through it.
+    Without this, running the suite writes into this project's REAL
+    instances/security/data/digest.db -- the seen-store and history of a live
+    deployment. get_connection reads the module global at call time, so
+    redirecting it here covers every caller that relies on the default.
+    """
+    import src.db
+
+    monkeypatch.setattr(src.db, "DB_PATH", tmp_path / "default-digest.db")

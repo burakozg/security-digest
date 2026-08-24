@@ -10,6 +10,8 @@ import feedparser
 import httpx
 import yaml
 
+from src import feed_health
+from src.feed_health import EMPTY, ERROR, OK, error_detail
 from src.recipients import derive_digests, normalise_users, warn_on_unknown_recipients
 from src.retry import retry
 from src.routing import apply_feed_routing
@@ -254,6 +256,16 @@ def _parse_feed(url: str) -> Any:
     return feedparser.parse(content)
 
 
+def _entry_published(entry: Any) -> str:
+    """An entry's publication date as an ISO string, or "" if it carries none."""
+    published = getattr(entry, "published_parsed", None) or getattr(
+        entry, "updated_parsed", None
+    )
+    if published and isinstance(published, struct_time):
+        return datetime.datetime(*published[:6]).isoformat()
+    return ""
+
+
 def _entry_publisher(entry: Any, link: str, fallback: str, search_feed: bool) -> str:
     """Who actually published an entry.
 
@@ -283,6 +295,7 @@ def fetch_feed(
     max_description_chars: int = 1000,
     extra: dict[str, Any] | None = None,
     search_feed: bool = False,
+    health: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch and parse a single RSS feed. Retries on transient failures.
 
@@ -297,7 +310,12 @@ def fetch_feed(
 
     search_feed marks a news-search feed (src/topics.py) rather than a publisher
     feed, which changes how the publisher is resolved and strips the markup those
-    feeds put in <description>."""
+    feeds put in <description>.
+
+    health, when given, is filled in with what this fetch found -- see
+    src/feed_health.py. Passed in rather than returned so that the return type
+    stays a plain list of items for every existing caller, and so that nothing
+    touches the database unless a caller actually asked for the record."""
     retry_cfg = (config or {}).get("retry", {})
     max_retries = retry_cfg.get("max_retries", 3)
     initial_delay = retry_cfg.get("initial_delay", 1.0)
@@ -313,6 +331,8 @@ def fetch_feed(
         )
     except Exception as e:
         log.warning("Failed to fetch %s (%s) after retries: %s", name, url, e)
+        if health is not None:
+            health.update(status=ERROR, detail=error_detail(e), items=0)
         return []
 
     if parsed.bozo and not parsed.entries:
@@ -321,16 +341,22 @@ def fetch_feed(
             name, url, getattr(parsed, "bozo_exception", "unknown parse error"),
         )
 
+    if health is not None:
+        # Counted and dated over EVERY entry, not the `limit` slice kept below:
+        # the question the column answers is whether the feed is alive, which a
+        # truncated view would understate. It is also what lets the on-demand
+        # probe pass limit=1 and stay fast without reporting "1 item".
+        bozo = getattr(parsed, "bozo_exception", None) if parsed.bozo else None
+        health.update(
+            status=OK if parsed.entries else EMPTY,
+            detail=(" ".join(str(bozo).split())[:60] or None) if bozo else None,
+            items=len(parsed.entries),
+            newest=max((_entry_published(e) for e in parsed.entries), default="") or None,
+        )
+
     items = []
     for entry in parsed.entries[:limit]:
-        # Handle different date formats across feeds
-        published = getattr(entry, "published_parsed", None) or getattr(
-            entry, "updated_parsed", None
-        )
-        published_iso = ""
-        if published and isinstance(published, struct_time):
-            dt = datetime.datetime(*published[:6])
-            published_iso = dt.isoformat()
+        published_iso = _entry_published(entry)
 
         link = clean_link(entry.get("link", ""))
         description = entry.get("summary", entry.get("description", ""))
@@ -424,6 +450,21 @@ def _pad(per_feed: list[list[dict[str, Any]]]) -> list[list[Any]]:
     return [items + [None] * (longest - len(items)) for items in per_feed]
 
 
+def _record_health(health: list[dict[str, Any]]) -> None:
+    """Persist this run's per-feed outcomes, and never let that break a fetch.
+
+    The digest is the job; the health column is a convenience on top of it. A
+    locked or unwritable database must not turn a successful fetch into a failed
+    run, so this is the one place in the pipeline that swallows its own error."""
+    if not health:
+        return
+    try:
+        feed_health.record(health)
+        feed_health.prune([h["url"] for h in health])
+    except Exception as e:
+        log.warning("Could not record feed health (the fetch itself was fine): %s", e)
+
+
 def fetch_all(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Fetch from all configured RSS sources and topic feeds, and return
     combined items."""
@@ -445,6 +486,7 @@ def fetch_all(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     fetch_time = datetime.datetime.now().isoformat()
 
     per_feed: list[list[dict[str, Any]]] = []
+    health: list[dict[str, Any]] = []
     for feed in rss_feeds:
         name = feed.get("name", feed.get("url", "unknown"))
         url = feed.get("url")
@@ -453,15 +495,20 @@ def fetch_all(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
             continue
 
         context = feed.get("topic_context")
+        record: dict[str, Any] = {"url": url, "name": name}
         items = fetch_feed(
             url, name, limit=max_per_source, config=config,
             max_description_chars=max_description_chars,
             extra={"topic_context": context} if context else None,
             search_feed=url in topic_urls,
+            health=record,
         )
+        health.append(record)
         if max_age_days:
             items = _drop_stale(items, int(max_age_days), name)
         per_feed.append(items)
+
+    _record_health(health)
 
     total = sum(len(items) for items in per_feed)
 

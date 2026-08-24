@@ -151,7 +151,7 @@ def test_fetch_all_passes_configured_max_description_chars(monkeypatch):
     captured = {}
 
     def fake_fetch_feed(url, name, limit=20, config=None, max_description_chars=1000,
-                        extra=None, search_feed=False):
+                        extra=None, search_feed=False, health=None):
         captured["max_description_chars"] = max_description_chars
         return []
 
@@ -193,3 +193,136 @@ def test_config_path_that_is_a_directory_raises_clearly(tmp_path):
     (tmp_path / "config.yaml").mkdir()
     with pytest.raises(IsADirectoryError, match="bind mount"):
         load_config(tmp_path / "config.yaml")
+
+
+# --- feed health ------------------------------------------------------------
+# fetch_feed fills in a `health` dict when given one. The contract that matters:
+# a caller who does NOT pass one gets exactly the old behaviour and touches no
+# database, so the pipeline's failure handling is unchanged by the column.
+
+
+class _Entry(dict):
+    """feedparser entries support both attribute and item access."""
+
+    def __getattr__(self, k):
+        try:
+            return self[k]
+        except KeyError:
+            raise AttributeError(k)
+
+
+def _parsed(entries, bozo=False, bozo_exception=None):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(entries=entries, bozo=bozo, bozo_exception=bozo_exception)
+
+
+def _entry(title="T", published=None):
+    e = _Entry(title=title, link="https://e.com/a", summary="s")
+    if published:
+        e["published_parsed"] = published.timetuple()
+    return e
+
+
+def test_fetch_feed_reports_a_healthy_feed(monkeypatch):
+    import datetime
+
+    newest = datetime.datetime(2026, 8, 24, 9, 0)
+    monkeypatch.setattr(
+        "src.fetcher._parse_feed",
+        lambda url: _parsed([_entry("A", newest), _entry("B", datetime.datetime(2026, 8, 20))]))
+    health = {}
+    items = fetch_feed("https://e.com/f", "F", health=health)
+    assert len(items) == 2
+    assert health["status"] == "ok" and health["items"] == 2
+    assert health["newest"] == newest.isoformat()
+
+
+def test_fetch_feed_counts_every_entry_not_just_the_kept_slice(monkeypatch):
+    """The column answers "is this feed alive", which a `limit`-truncated count
+    would understate -- and it is what lets the on-demand probe pass limit=1 and
+    stay fast without reporting "1 item"."""
+    monkeypatch.setattr("src.fetcher._parse_feed", lambda url: _parsed([_entry() for _ in range(9)]))
+    health = {}
+    items = fetch_feed("https://e.com/f", "F", limit=1, health=health)
+    assert len(items) == 1 and health["items"] == 9
+
+
+def test_fetch_feed_reports_a_feed_that_fetches_but_is_empty(monkeypatch):
+    """HTTP 200 with no entries is broken, and nothing about it raises."""
+    monkeypatch.setattr("src.fetcher._parse_feed", lambda url: _parsed([]))
+    health = {}
+    assert fetch_feed("https://e.com/f", "F", health=health) == []
+    assert health["status"] == "empty"
+
+
+def test_fetch_feed_reports_why_a_fetch_failed(monkeypatch):
+    import httpx
+
+    def boom(url):
+        raise httpx.HTTPStatusError(
+            "Client error", request=httpx.Request("GET", url), response=httpx.Response(404))
+
+    monkeypatch.setattr("src.fetcher._parse_feed", boom)
+    health = {}
+    assert fetch_feed("https://e.com/f", "F", config={"retry": {"max_retries": 0}},
+                      health=health) == []
+    assert health["status"] == "error" and health["detail"] == "HTTP 404"
+
+
+def test_fetch_feed_without_a_health_dict_behaves_exactly_as_before(monkeypatch):
+    """The pipeline must be unaffected by the column: no database, no new
+    failure mode, same swallow-and-continue on a dead feed."""
+    def boom(url):
+        raise ValueError("down")
+
+    monkeypatch.setattr("src.fetcher._parse_feed", boom)
+    assert fetch_feed("https://e.com/f", "F", config={"retry": {"max_retries": 0}}) == []
+
+
+def test_fetch_all_records_health_for_every_feed(monkeypatch, tmp_path):
+    import src.db
+    from src.feed_health import load
+
+    db = tmp_path / "digest.db"
+    monkeypatch.setattr(src.db, "DB_PATH", db)
+    monkeypatch.setattr(
+        "src.fetcher._parse_feed",
+        lambda url: _parsed([]) if "dead" in url else _parsed([_entry()]))
+
+    fetch_all({"sources": {"rss": [
+        {"name": "Live", "url": "https://e.com/live"},
+        {"name": "Dead", "url": "https://e.com/dead"},
+    ]}})
+
+    stored = load(db)
+    assert stored["https://e.com/live"]["status"] == "ok"
+    assert stored["https://e.com/dead"]["status"] == "empty"
+
+
+def test_fetch_all_forgets_a_feed_that_was_removed(monkeypatch, tmp_path):
+    import src.db
+    from src.feed_health import load, record
+
+    db = tmp_path / "digest.db"
+    monkeypatch.setattr(src.db, "DB_PATH", db)
+    record([{"url": "https://e.com/gone", "name": "Gone", "status": "error"}], db)
+    monkeypatch.setattr("src.fetcher._parse_feed", lambda url: _parsed([_entry()]))
+
+    fetch_all({"sources": {"rss": [{"name": "Live", "url": "https://e.com/live"}]}})
+    assert list(load(db)) == ["https://e.com/live"]
+
+
+def test_a_broken_health_database_never_fails_the_fetch(monkeypatch, caplog):
+    """The digest is the job; the column is a convenience on top of it."""
+    import src.feed_health
+
+    monkeypatch.setattr("src.fetcher._parse_feed", lambda url: _parsed([_entry()]))
+    monkeypatch.setattr(src.feed_health, "record",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk is full")))
+
+    with caplog.at_level("WARNING"):
+        items = fetch_all({"sources": {"rss": [{"name": "F", "url": "https://e.com/f"}]}})
+
+    assert len(items) == 1
+    assert "the fetch itself was fine" in caplog.text

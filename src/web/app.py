@@ -17,6 +17,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from src.dedupe import clear_seen
+from src.feed_health import check_now, describe, load as load_health
 from src.history import load_entries
 from src.llm_models import catalog, is_valid_model
 from src.main import run
@@ -225,6 +226,13 @@ def digests_info():
     return [{"title": d.get("title", "Digest"), "slug": slug(d.get("title", "Digest"))} for d in digests]
 
 
+def _quiet_after_days(config: dict[str, Any]) -> int:
+    """How stale a feed's newest entry may be before it is called quiet."""
+    from src.feed_health import QUIET_AFTER_DAYS
+
+    return int((config.get("sources") or {}).get("quiet_after_days", QUIET_AFTER_DAYS))
+
+
 def _sources_overrides_path() -> Path:
     rel = _load_config().get("sources_overrides_file", "data/sources_overrides.yaml")
     return PROJECT_ROOT / rel
@@ -285,14 +293,24 @@ def admin_get_sources():
     ov_active = _sources_overrides_active()
     if not isinstance(rss, list):
         return {"rss": [], "overrides_active": ov_active}
+    # One query for every feed rather than one per row: the table is tiny, but
+    # the shape of the page should not decide the shape of the query.
+    health = load_health()
+    quiet_after = _quiet_after_days(config)
     out: list[dict[str, Any]] = []
     for x in rss:
         if isinstance(x, dict) and x.get("name") and x.get("url"):
             name = str(x["name"]).strip()
+            url = str(x["url"]).strip()
             out.append({
                 "name": name,
-                "url": str(x["url"]).strip(),
+                "url": url,
                 "digests": _digests_for_source_name(config, name),
+                # Recorded by the daily run (see src/feed_health.py). A feed with
+                # no row yet has never been fetched since the column existed --
+                # reported as "never checked" rather than as healthy, because
+                # "we don't know" and "it works" are different answers.
+                "health": describe(health.get(url), quiet_after_days=quiet_after),
             })
     return {
         "rss": out,
@@ -364,6 +382,54 @@ def admin_save_sources(body: dict = Body(...)):
         return {"ok": True, "message": f"Saved {len(cleaned)} feeds ({path.name})"}
     except OSError as e:
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/admin/sources/check", dependencies=[admin_auth])
+def admin_check_sources(body: dict = Body(default={})):
+    """Fetch the configured feeds right now and report what came back.
+
+    The recorded health answers "is this feed working" for feeds the pipeline has
+    already run against. It cannot answer it for one you just added or just
+    fixed, which is exactly when you want to know -- hence this. Pass a `url` to
+    probe one feed; omit it to probe them all.
+
+    Only feeds already in the config are probed: taking a URL from the request
+    body would turn an authenticated admin endpoint into a request forwarder
+    that fetches anything the caller names."""
+    config = _load_config()
+    feeds = [
+        {"name": str(f["name"]).strip(), "url": str(f["url"]).strip()}
+        for f in ((config.get("sources") or {}).get("rss") or [])
+        if isinstance(f, dict) and f.get("name") and f.get("url")
+    ]
+    wanted = (body or {}).get("url")
+    if wanted:
+        feeds = [f for f in feeds if f["url"] == str(wanted).strip()]
+        if not feeds:
+            return JSONResponse(
+                {"ok": False, "message": "No configured feed has that URL. Save the feed "
+                                         "first, then check it."},
+                status_code=404,
+            )
+    if not feeds:
+        return {"ok": True, "message": "No feeds to check.", "health": {}}
+
+    check_now(feeds, config)
+    health = load_health()
+    quiet_after = _quiet_after_days(config)
+    checked = {
+        f["url"]: describe(health.get(f["url"]), quiet_after_days=quiet_after) for f in feeds
+    }
+    broken = [f["name"] for f in feeds if checked[f["url"]]["status"] not in ("ok", "quiet")]
+    return {
+        "ok": True,
+        "health": checked,
+        "message": (
+            f"Checked {len(feeds)} feed(s) — all fetched."
+            if not broken
+            else f"Checked {len(feeds)} feed(s) — {len(broken)} failed: {', '.join(broken)}"
+        ),
+    }
 
 
 @app.post("/admin/sources/reset-overrides", dependencies=[admin_auth])

@@ -53,9 +53,10 @@
     .hint { font-size: 0.85rem; color: var(--text-muted); margin-top: 12px; }
     code { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; background: var(--bg); padding: 0.1em 0.35em; border-radius: 4px; }
     .feed-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-    .feed-row { display: grid; grid-template-columns: minmax(88px, 0.75fr) minmax(100px, 1fr) minmax(160px, 1.5fr) auto; gap: 10px; align-items: center; }
-    @media (max-width: 900px) { .feed-row { grid-template-columns: 1fr 1fr; }
+    .feed-row { display: grid; grid-template-columns: minmax(88px, 0.75fr) minmax(100px, 1fr) minmax(150px, 1.4fr) minmax(150px, 1fr) auto; gap: 10px; align-items: center; }
+    @media (max-width: 1040px) { .feed-row { grid-template-columns: 1fr 1fr; }
       .feed-row .digest-col { grid-column: 1 / -1; }
+      .feed-row .health-col { grid-column: 1 / -1; }
       .feed-row .btn-ghost { justify-self: start; }
     }
     @media (max-width: 640px) { .feed-row { grid-template-columns: 1fr; } }
@@ -104,8 +105,21 @@
     .topic-row input, .topic-row textarea { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; font-family: inherit; }
     .topic-row textarea { resize: vertical; min-height: 54px; }
     .topic-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); display: block; margin-bottom: 3px; }
-    .feed-grid-head { display: grid; grid-template-columns: minmax(88px, 0.75fr) minmax(100px, 1fr) minmax(160px, 1.5fr) auto; gap: 10px; margin-bottom: 6px; }
-    @media (max-width: 900px) { .feed-grid-head { display: none; } }
+    .feed-grid-head { display: grid; grid-template-columns: minmax(88px, 0.75fr) minmax(100px, 1fr) minmax(150px, 1.4fr) minmax(150px, 1fr) auto; gap: 10px; margin-bottom: 6px; }
+    @media (max-width: 1040px) { .feed-grid-head { display: none; } }
+    /* Status reads at a glance or not at all, so the colour carries the state
+       and the text carries the detail. Amber for quiet rather than red: the feed
+       is not broken, it has stopped saying anything, and those want different
+       reactions. */
+    .health-col { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--text-muted); overflow-wrap: anywhere; }
+    .health-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+    .health-ok .health-dot { background: #4ade80; }
+    .health-quiet .health-dot { background: #fcd34d; }
+    .health-quiet { color: #fcd34d; }
+    .health-error .health-dot, .health-empty .health-dot { background: var(--error); }
+    .health-error, .health-empty { color: var(--error); }
+    .health-unknown .health-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--text-muted); }
+    .health-col button { padding: 2px 8px; font-size: 0.72rem; }
   </style>
 </head>
 <body>
@@ -133,6 +147,7 @@
     <div class="card" id="sourcesCard" style="display:none">
       <h2>RSS sources</h2>
       <p>Feeds are saved to <code>data/sources_overrides.yaml</code> so <code>sources.yaml</code> can stay read-only. The initial list still comes from <code>sources.yaml</code> until you save here (then overrides replace the full RSS list). Feeds reach <strong>all digests</strong> by default — which digest an item actually lands in is decided by its subject area, not by the feed. Use the <strong>Digests</strong> column only to bar a feed from somewhere; anything you bar is discarded rather than redirected, so the routing table below shows the result.</p>
+      <p><strong>Status</strong> is what the last run actually got from each feed, not a live probe — so it costs nothing and it reports what the digest experienced. <span class="health-quiet">Quiet</span> means the feed fetches perfectly well but has published nothing in three weeks, which is how a shut-down publisher looks: no error anywhere, and no items either. Use <strong>Check</strong> for a feed you have just added or fixed, where waiting for tomorrow's run is no use.</p>
       <div id="sourcesOverridesBanner" class="msg" style="display:none;margin-bottom:12px;background:rgba(251,191,36,0.12);color:#fcd34d;border:1px solid rgba(251,191,36,0.35)">
         <strong>Overrides active.</strong> This list is from <code>data/sources_overrides.yaml</code>. New feeds you add only to <code>sources.yaml</code> on the server will not show until you discard overrides or add them here and save.
         <button type="button" class="btn btn-ghost" id="resetSourcesOverridesBtn" style="margin-left:8px;margin-top:8px">Discard overrides — use sources.yaml</button>
@@ -141,11 +156,13 @@
         <span class="feed-head">Digests</span>
         <span class="feed-head">Name</span>
         <span class="feed-head">Feed URL</span>
+        <span class="feed-head">Status</span>
         <span></span>
       </div>
       <div class="feed-list" id="feedsContainer"></div>
       <button type="button" class="btn btn-primary" id="addFeedBtn">Add feed</button>
       <button type="button" class="btn btn-primary" id="saveFeedsBtn" style="margin-left:8px">Save sources</button>
+      <button type="button" class="btn btn-ghost" id="checkFeedsBtn" style="margin-left:8px">Check all now</button>
       <div id="feedsMsg" class="msg" style="display:none;margin-top:12px"></div>
     </div>
 
@@ -520,6 +537,82 @@
       return col;
     }
 
+    // Feed health, keyed by URL, as last reported by /admin/sources or a check.
+    let HEALTH = {};
+
+    // Written by the model-free server side (feed_health.describe) so the phrasing
+    // is one implementation and testable; this only paints it.
+    function renderHealthCol(url) {
+      const col = document.createElement('div');
+      col.className = 'health-col';
+      col.setAttribute('data-field', 'health');
+      const h = HEALTH[url] || { status: 'unknown', summary: 'never checked' };
+
+      col.classList.add('health-' + (h.status || 'unknown'));
+      const dot = document.createElement('span');
+      dot.className = 'health-dot';
+      const text = document.createElement('span');
+      text.textContent = h.summary || h.status || '';
+      // The full error is often a sentence; the column is not. Title attribute
+      // rather than a wider column, since most rows have nothing to say here.
+      if (h.detail) col.title = h.detail;
+      col.appendChild(dot);
+      col.appendChild(text);
+
+      // A row with no saved URL has nothing to probe -- the endpoint only
+      // accepts feeds that are already in the config, deliberately.
+      if (url) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-ghost';
+        btn.textContent = 'Check';
+        btn.onclick = () => checkFeeds(url, btn);
+        col.appendChild(btn);
+      }
+      return col;
+    }
+
+    function repaintHealth() {
+      document.querySelectorAll('#feedsContainer .feed-row').forEach(row => {
+        const url = row.querySelector('[data-field=url]');
+        const old = row.querySelector('[data-field=health]');
+        if (!url || !old) return;
+        row.replaceChild(renderHealthCol(url.value), old);
+      });
+    }
+
+    async function checkFeeds(url, btn) {
+      const msg = document.getElementById('feedsMsg');
+      const all = document.getElementById('checkFeedsBtn');
+      const busy = btn || all;
+      const label = busy.textContent;
+      busy.disabled = true;
+      busy.textContent = 'Checking…';
+      msg.style.display = 'block';
+      msg.className = 'msg';
+      msg.textContent = 'Fetching' + (url ? ' the feed' : ' every feed') + '…';
+      try {
+        const r = await adminFetch('/admin/sources/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(url ? { url: url } : {}),
+        });
+        const data = await r.json();
+        // A check reports only the feeds it probed, so merge rather than replace
+        // -- checking one row must not blank the status of every other.
+        Object.assign(HEALTH, data.health || {});
+        repaintHealth();
+        msg.textContent = data.message || (data.ok ? 'Checked.' : 'Error');
+        msg.className = 'msg ' + (data.ok ? 'success' : 'error');
+      } catch (e) {
+        msg.textContent = e.message || 'Request failed';
+        msg.className = 'msg error';
+      } finally {
+        busy.disabled = false;
+        busy.textContent = label;
+      }
+    }
+
     function addFeedRow(name, url, digestLabels) {
       const wrap = document.getElementById('feedsContainer');
       const row = document.createElement('div');
@@ -542,6 +635,7 @@
       rm.onclick = () => row.remove();
       row.appendChild(inName);
       row.appendChild(inUrl);
+      row.appendChild(renderHealthCol(url || ''));
       row.appendChild(rm);
       wrap.appendChild(row);
     }
@@ -558,6 +652,8 @@
         box.innerHTML = '';
         ALL_DIGESTS = data.all_digests || [];
         const list = data.rss || [];
+        HEALTH = {};
+        list.forEach(f => { if (f.health) HEALTH[f.url] = f.health; });
         if (list.length === 0) addFeedRow('', '', ALL_DIGESTS);
         else list.forEach(f => addFeedRow(f.name, f.url, f.digests || []));
         loadRouting();
@@ -567,6 +663,8 @@
         msg.className = 'msg error';
       }
     }
+
+    document.getElementById('checkFeedsBtn').onclick = () => checkFeeds(null, null);
 
     async function loadRouting() {
       const card = document.getElementById('routingCard');

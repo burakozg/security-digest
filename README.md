@@ -217,6 +217,17 @@ instead of anywhere durable). Every deploy path in this repo
 (`docker-compose.yml`, `deploy.sh`, `deploy-native.sh`,
 `container-station-app.yaml`) already mounts it that way.
 
+The **RSS sources** card carries a **Status** column showing what the last run
+actually got from each feed — item count, or the reason it failed and how long it
+has been failing. It also flags a third state: a feed that returns HTTP 200 and
+valid XML but has published nothing in `sources.quiet_after_days` (21 by
+default) is shown as **quiet**. That is what a shut-down publisher looks like —
+nothing errors, nothing warns, and no items arrive — and it is how Threatpost and
+CSO Online sat dead in `sources.yaml` for months. Health is recorded by the
+daily run rather than probed, so the column costs no extra traffic and reports
+what the pipeline experienced; **Check** (per feed) and **Check all now** fetch
+live, for a feed you have just added or fixed.
+
 The **Recipients** card adds, edits and removes readers; the **Topics** card
 edits `topics.yaml`'s entries — name, queries, relevance context,
 language/market, and a **Send to** dropdown of recipients plus “All” — and shows a read-only column of which digests pick
