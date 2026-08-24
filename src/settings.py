@@ -63,6 +63,13 @@ class User(_Lenient):
 
     name: str
     email: str
+    # How often this reader is emailed: "daily" or "weekly". A weekly reader's
+    # items are still gathered every run and held in a queue (see src/weekly.py),
+    # then consolidated into one edition on send_day.
+    frequency: str = "daily"
+    # Weekday a weekly reader's digest goes out ("mon".."sun"). None on a daily
+    # reader, where it would mean nothing.
+    send_day: str | None = None
 
 
 class DigestTemplate(_Lenient):
@@ -72,6 +79,11 @@ class DigestTemplate(_Lenient):
     title_format: str = "{name}'s Digest"
     sections: list[str] = []
     labels: dict[str, str] | None = None
+    # Sections a WEEKLY edition prints, if narrower than the daily list. Applied
+    # when rendering, never to `sections` itself -- that field is what main.py
+    # routes on, so trimming it would leave the dropped categories unrouted,
+    # unseen and re-summarised every day. See weekly._sections.
+    weekly_sections: list[str] | None = None
 
 
 class SourcesConfig(_Lenient):
@@ -149,6 +161,11 @@ class DigestDef(_Lenient):
     # Section heading overrides, e.g. {"key": "Worth knowing"}. Anything absent
     # falls back to the built-in map and then to title-casing the section name.
     labels: dict[str, str] | None = None
+    # Delivery cadence, carried over from the recipient this digest was derived
+    # for. "daily" sends on every run; "weekly" queues and sends on send_day.
+    frequency: str = "daily"
+    send_day: str | None = None
+    weekly_sections: list[str] | None = None
 
 
 class ScheduleConfig(_Lenient):

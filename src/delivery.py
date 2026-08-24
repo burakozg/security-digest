@@ -48,12 +48,15 @@ def deliver_previous(
 
 
 def deliver(
-    content: str, config: dict, title: str | None = None, digest_cfg: dict | None = None
+    content: str, config: dict, title: str | None = None, digest_cfg: dict | None = None,
+    subject_note: str | None = None,
 ) -> None:
     """Deliver digest according to config (console, file, or email).
 
     digest_cfg is the digest's own definition; it carries a `to:` override so
-    several digests in one run can reach different recipients."""
+    several digests in one run can reach different recipients. subject_note is
+    appended to the email subject in brackets -- it is what tells a weekly
+    reader at a glance that "week of 17 Aug - 23 Aug" arrived, not another day."""
     delivery = config.get("delivery", {})
     output = delivery.get("output", "console")
 
@@ -62,7 +65,7 @@ def deliver(
     elif output == "file":
         _deliver_file(content, delivery, title)
     elif output == "email":
-        _deliver_email(content, config, title, digest_cfg)
+        _deliver_email(content, config, title, digest_cfg, subject_note)
     else:
         log.warning("Unknown output '%s', falling back to console", output)
         _deliver_console(content)
@@ -225,12 +228,12 @@ def _send_email_message(
 
 def _deliver_email(
     content: str, config: dict, title_override: str | None = None,
-    digest_cfg: dict | None = None,
+    digest_cfg: dict | None = None, subject_note: str | None = None,
 ) -> None:
     digest_cfg = digest_cfg or config.get("digest", {}) or {}
     title = title_override or digest_cfg.get("title", "Security Digest")
     today = datetime.date.today().isoformat()
-    subject = f"{title} — {today}"
+    subject = f"{title} — {today}" + (f" ({subject_note})" if subject_note else "")
 
     html_body = _markdown_to_html(content)
     _save_for_web(html_body, title)

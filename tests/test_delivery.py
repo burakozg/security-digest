@@ -3,7 +3,7 @@ SMTP/network -- _deliver_file takes an explicit file_path and has neither."""
 
 import pytest
 
-from src.delivery import _deliver_file, _resolve_email_config
+from src.delivery import _deliver_email, _deliver_file, _resolve_email_config
 
 
 def test_deliver_file_uses_slug_for_safe_filename(tmp_path):
@@ -145,3 +145,28 @@ def test_no_addresses_anywhere_names_the_env_vars(smtp_password):
 
     with pytest.raises(ValueError, match="DIGEST_EMAIL_FROM and DIGEST_EMAIL_TO"):
         _resolve_email_config(config)
+
+
+# --- subject note ----------------------------------------------------------
+# A weekly reader's inbox otherwise shows a subject identical to a daily one,
+# on a day they were not expecting mail.
+
+
+def _subject(monkeypatch, **kwargs):
+    sent = {}
+    monkeypatch.setattr("src.delivery._save_for_web", lambda html, title: None)
+    monkeypatch.setattr(
+        "src.delivery._send_email_message",
+        lambda subject, plain, html, config, digest_cfg=None: sent.update(subject=subject))
+    _deliver_email("body", BASE_EMAIL_CONFIG, "Her News", {"title": "Her News"}, **kwargs)
+    return sent["subject"]
+
+
+def test_the_subject_names_the_period_when_one_is_given(monkeypatch):
+    subject = _subject(monkeypatch, subject_note="week of 15 Aug – 22 Aug")
+    assert subject.endswith(" (week of 15 Aug – 22 Aug)")
+    assert subject.startswith("Her News — ")
+
+
+def test_a_daily_subject_is_unchanged(monkeypatch):
+    assert "(" not in _subject(monkeypatch)

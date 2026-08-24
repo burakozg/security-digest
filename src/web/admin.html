@@ -84,9 +84,13 @@
     /* Recipients are read-only rows until Edit is pressed, so a stray keystroke
        can't quietly redirect someone's mail. */
     .user-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-    .user-row { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(160px, 1.6fr) auto auto; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
-    @media (max-width: 700px) { .user-row { grid-template-columns: 1fr 1fr; } }
-    .user-row input { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; }
+    .user-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(150px, 1.5fr) minmax(150px, 0.9fr) auto auto; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
+    @media (max-width: 860px) { .user-row { grid-template-columns: 1fr 1fr; } .user-cadence { grid-column: 1 / -1; } }
+    .user-row input, .user-row select { padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg); color: var(--text); border: 1px solid var(--border); font-size: 0.9rem; width: 100%; }
+    /* Frequency and day are one control in two halves: the day is meaningless
+       until the frequency is weekly, so they sit together and the day hides. */
+    .user-cadence { display: flex; gap: 8px; align-items: center; }
+    .user-cadence select { min-width: 0; }
     .user-static { font-size: 0.92rem; overflow-wrap: anywhere; }
     .user-static.email { color: var(--text-muted); }
     .user-topics { grid-column: 1 / -1; font-size: 0.78rem; color: var(--text-muted); }
@@ -111,7 +115,7 @@
 
     <div class="card" id="usersCard" style="display:none">
       <h2>Recipients</h2>
-      <p>Who receives this instance's digests. One digest is built per recipient, containing the topics addressed to them below plus every topic set to <strong>All recipients</strong>. Stored in <code>data/users.yaml</code> and edited here — there is nothing to deploy and nothing to keep in sync. A recipient with no topics gets no email at all rather than an empty one.</p>
+      <p>Who receives this instance's digests. One digest is built per recipient, containing the topics addressed to them below plus every topic set to <strong>All recipients</strong>. Stored in <code>data/users.yaml</code> and edited here — there is nothing to deploy and nothing to keep in sync. A recipient with no topics gets no email at all rather than an empty one. A <strong>weekly</strong> recipient's topics are still gathered on every run — their items are held and sent as one consolidated edition on their day, carrying the week's key and notable stories.</p>
       <div class="user-list" id="usersContainer"></div>
       <button type="button" class="btn btn-primary" id="addUserBtn">Add recipient</button>
       <div id="usersMsg" class="msg" style="display:none;margin-top:12px"></div>
@@ -699,6 +703,34 @@
       USERS.forEach((u, idx) => box.appendChild(userRow(u, idx)));
     }
 
+    // Vocabulary for the cadence selectors, replaced by whatever /admin/users
+    // reports so the page never keeps its own copy of a list the server
+    // validates against.
+    let FREQUENCIES = ['daily', 'weekly'];
+    let DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+    let DEFAULT_SEND_DAY = 'sat';
+    const DAY_LABELS = {
+      mon: 'Mondays', tue: 'Tuesdays', wed: 'Wednesdays', thu: 'Thursdays',
+      fri: 'Fridays', sat: 'Saturdays', sun: 'Sundays',
+    };
+
+    function cadenceSelect(options, value, label) {
+      const el = document.createElement('select');
+      if (label) el.setAttribute('aria-label', label);
+      options.forEach(([v, text]) => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = text;
+        el.appendChild(o);
+      });
+      el.value = value;
+      return el;
+    }
+
+    function cadenceText(u) {
+      if ((u.frequency || 'daily') !== 'weekly') return 'Daily';
+      return 'Weekly · ' + (DAY_LABELS[u.send_day] || u.send_day || DEFAULT_SEND_DAY);
+    }
+
     function userRow(u, idx) {
       const row = document.createElement('div');
       row.className = 'user-row';
@@ -708,10 +740,29 @@
         name.type = 'text'; name.placeholder = 'Name'; name.value = u.name || '';
         const email = document.createElement('input');
         email.type = 'email'; email.placeholder = 'name@example.com'; email.value = u.email || '';
+
+        const cadence = document.createElement('div');
+        cadence.className = 'user-cadence';
+        const freq = cadenceSelect(
+          FREQUENCIES.map(f => [f, f === 'weekly' ? 'Weekly' : 'Daily']),
+          u.frequency || 'daily', 'Delivery frequency');
+        const day = cadenceSelect(
+          DAYS.map(d => [d, DAY_LABELS[d] || d]),
+          u.send_day || DEFAULT_SEND_DAY, 'Send day');
+        // The day only means something for a weekly reader, so it appears only
+        // then rather than sitting there looking like a setting being ignored.
+        const syncDay = () => { day.style.display = freq.value === 'weekly' ? '' : 'none'; };
+        freq.onchange = syncDay;
+        syncDay();
+        cadence.appendChild(freq); cadence.appendChild(day);
+
         const save = document.createElement('button');
         save.type = 'button'; save.className = 'btn btn-primary'; save.textContent = 'Save';
         save.onclick = () => {
-          USERS[idx] = { name: name.value.trim(), email: email.value.trim(), topics: u.topics || [] };
+          USERS[idx] = {
+            name: name.value.trim(), email: email.value.trim(),
+            frequency: freq.value, send_day: day.value, topics: u.topics || [],
+          };
           persistUsers();
         };
         const cancel = document.createElement('button');
@@ -721,7 +772,7 @@
           if (u.isNew) USERS.splice(idx, 1); else delete USERS[idx].editing;
           renderUsers();
         };
-        row.appendChild(name); row.appendChild(email);
+        row.appendChild(name); row.appendChild(email); row.appendChild(cadence);
         row.appendChild(save); row.appendChild(cancel);
         return row;
       }
@@ -732,6 +783,9 @@
       const email = document.createElement('div');
       email.className = 'user-static email';
       email.textContent = u.email || '';
+      const cadence = document.createElement('div');
+      cadence.className = 'user-static';
+      cadence.textContent = cadenceText(u);
       const edit = document.createElement('button');
       edit.type = 'button'; edit.className = 'btn btn-ghost'; edit.textContent = 'Edit';
       edit.onclick = () => { USERS[idx].editing = true; renderUsers(); };
@@ -742,7 +796,7 @@
         USERS.splice(idx, 1);
         persistUsers();
       };
-      row.appendChild(name); row.appendChild(email);
+      row.appendChild(name); row.appendChild(email); row.appendChild(cadence);
       row.appendChild(edit); row.appendChild(remove);
 
       const topics = document.createElement('div');
@@ -759,7 +813,10 @@
       msg.style.display = 'block';
       msg.textContent = '';
       msg.className = 'msg';
-      const payload = USERS.map(u => ({ name: u.name, email: u.email }));
+      const payload = USERS.map(u => ({
+        name: u.name, email: u.email,
+        frequency: u.frequency || 'daily', send_day: u.send_day || DEFAULT_SEND_DAY,
+      }));
       try {
         const r = await adminFetch('/admin/users', {
           method: 'POST',
@@ -783,7 +840,14 @@
       try {
         const r = await adminFetch('/admin/users');
         const data = await r.json();
-        USERS = (data.users || []).map(u => ({ name: u.name, email: u.email, topics: u.topics || [] }));
+        if (Array.isArray(data.frequencies) && data.frequencies.length) FREQUENCIES = data.frequencies;
+        if (Array.isArray(data.days) && data.days.length) DAYS = data.days;
+        if (data.default_send_day) DEFAULT_SEND_DAY = data.default_send_day;
+        USERS = (data.users || []).map(u => ({
+          name: u.name, email: u.email,
+          frequency: u.frequency || 'daily', send_day: u.send_day || DEFAULT_SEND_DAY,
+          topics: u.topics || [],
+        }));
         renderUsers();
       } catch (e) {
         msg.style.display = 'block';
@@ -793,7 +857,8 @@
     }
 
     document.getElementById('addUserBtn').onclick = function() {
-      USERS.push({ name: '', email: '', topics: [], editing: true, isNew: true });
+      USERS.push({ name: '', email: '', frequency: 'daily', send_day: DEFAULT_SEND_DAY,
+                   topics: [], editing: true, isNew: true });
       renderUsers();
     };
 

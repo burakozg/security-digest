@@ -135,3 +135,106 @@ def test_one_story_is_delivered_to_exactly_one_digest(wired, monkeypatch):
     main.run()
 
     assert wired["delivered"] == ["AI Security Digest"]
+
+
+# --- weekly delivery -------------------------------------------------------
+# A weekly digest takes its normal turn in the routing loop and only the SEND is
+# deferred. Skipping it outright instead would leave its items unrouted, so
+# mark_seen would not take them and they would be re-fetched and re-summarised
+# at full token cost every day until the send -- or, where the topic is shared
+# with a daily reader, marked seen by that reader and gone before the send day.
+
+
+@pytest.fixture
+def weekly(wired, monkeypatch):
+    """`wired`, plus the weekly queue and send both recorded rather than run."""
+    wired["queued"] = []
+    wired["send_due"] = 0
+    monkeypatch.setattr(main, "queue_weekly",
+                        lambda items, title: wired["queued"].append(
+                            (title, [i["title"] for i in items])))
+    monkeypatch.setattr(main, "send_due",
+                        lambda config, digests: wired.__setitem__(
+                            "send_due", wired["send_due"] + 1) or 0)
+    return wired
+
+
+def _two_readers():
+    return {
+        "sources": {"rss": [{"name": "Krebs", "url": "u", "digests": ["Daily", "Weekly"]}]},
+        "digests": [
+            {"title": "Daily", "sections": ["news"], "sources": ["Krebs"]},
+            {"title": "Weekly", "sections": ["news"], "sources": ["Krebs"],
+             "frequency": "weekly", "send_day": "sat"},
+        ],
+        "llm": {"categories": ["news", "exclude"]},
+    }
+
+
+def test_a_weekly_digest_queues_instead_of_emailing(weekly, monkeypatch):
+    monkeypatch.setattr(main, "load_config", lambda *a, **k: _two_readers())
+    items = [{"link": "a", "source": "Krebs", "title": "A"}]
+    summarised = [{**items[0], "category": "news", "summary": "s"}]
+    monkeypatch.setattr(main, "fetch_all", lambda config: items)
+    monkeypatch.setattr(main, "summarise_all", lambda i, c: summarised)
+
+    main.run()
+
+    assert weekly["delivered"] == ["Daily"]
+    assert weekly["queued"] == [("Weekly", ["A"])]
+
+
+def test_a_queued_item_is_still_marked_seen(weekly, monkeypatch):
+    """The regression this design exists to prevent: an item held for a weekly
+    reader must not come back through the summariser tomorrow."""
+    monkeypatch.setattr(main, "load_config", lambda *a, **k: {
+        "sources": {"rss": [{"name": "Krebs", "url": "u", "digests": ["Weekly"]}]},
+        "digests": [{"title": "Weekly", "sections": ["news"], "sources": ["Krebs"],
+                     "frequency": "weekly"}],
+        "llm": {"categories": ["news", "exclude"]},
+    })
+    items = [{"link": "a", "source": "Krebs", "title": "A"}]
+    monkeypatch.setattr(main, "fetch_all", lambda config: items)
+    monkeypatch.setattr(main, "summarise_all",
+                        lambda i, c: [{**items[0], "category": "news", "summary": "s"}])
+
+    main.run()
+
+    assert weekly["queued"] == [("Weekly", ["A"])]
+    assert weekly["seen"] == ["a"]
+    assert weekly["delivered"] == []
+
+
+def test_the_weekly_send_runs_even_on_a_day_that_fetched_nothing(weekly, monkeypatch):
+    """A weekly edition comes from its queue, not from today, so a barren fetch
+    is no reason to withhold one that is due."""
+    monkeypatch.setattr(main, "load_config", lambda *a, **k: _two_readers())
+    monkeypatch.setattr(main, "fetch_all", lambda config: [])
+
+    main.run()
+    assert weekly["send_due"] == 1
+
+
+def test_the_weekly_send_runs_on_a_day_with_no_NEW_items(weekly, monkeypatch):
+    monkeypatch.setattr(main, "load_config", lambda *a, **k: _two_readers())
+    monkeypatch.setattr(main, "fetch_all", lambda config: [{"link": "a", "source": "Krebs"}])
+    monkeypatch.setattr(main, "filter_new", lambda items, **k: [])
+    monkeypatch.setattr(main, "_deliver_previous", lambda config, digests: 0)
+
+    main.run()
+    assert weekly["send_due"] == 1
+
+
+def test_a_weekly_digest_has_no_previous_edition_to_re_send(weekly, monkeypatch):
+    """"Yesterday's digest, unchanged" is meaningless for an edition covering a
+    period -- the queue simply keeps accumulating until the reader's day."""
+    seen_by_deliver_previous = []
+    monkeypatch.setattr(main, "load_config", lambda *a, **k: _two_readers())
+    monkeypatch.setattr(main, "fetch_all", lambda config: [{"link": "a", "source": "Krebs"}])
+    monkeypatch.setattr(main, "filter_new", lambda items, **k: [])
+    monkeypatch.setattr(main, "_deliver_previous",
+                        lambda config, digests: seen_by_deliver_previous.extend(
+                            d["title"] for d in digests) or 0)
+
+    main.run()
+    assert seen_by_deliver_previous == ["Daily"]

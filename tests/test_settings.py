@@ -82,3 +82,28 @@ def test_wiring_warnings_are_logged_once_per_process(caplog):
     assert first == second and first
     # ...but the log records it once.
     assert len(caplog.records) == len(first)
+
+
+def test_delivery_cadence_validates_on_users_and_digests():
+    settings = Settings.model_validate({
+        "users": [{"name": "Her", "email": "her@b.com",
+                   "frequency": "weekly", "send_day": "sun"}],
+        "digest_template": {"sections": ["key", "notable", "mention"],
+                            "weekly_sections": ["key", "notable"]},
+        "digests": [{"title": "Her News", "frequency": "weekly", "send_day": "sun",
+                     "weekly_sections": ["key"]}],
+    })
+    assert settings.users[0].frequency == "weekly"
+    assert settings.users[0].send_day == "sun"
+    assert settings.digest_template.weekly_sections == ["key", "notable"]
+    assert settings.digests[0].frequency == "weekly"
+
+
+def test_cadence_defaults_to_daily_on_a_config_that_never_heard_of_it():
+    settings = Settings.model_validate({
+        "users": [{"name": "Him", "email": "him@b.com"}],
+        "digests": [{"title": "Security Digest"}],
+    })
+    assert settings.users[0].frequency == "daily"
+    assert settings.users[0].send_day is None
+    assert settings.digests[0].frequency == "daily"

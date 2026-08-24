@@ -33,6 +33,14 @@ digest_template:
   - key
   - notable
   - mention
+  # Sections a WEEKLY recipient's edition prints. A week of "Briefly" items is a
+  # tail nobody reads, and they are all on the History page anyway. Applied when
+  # rendering the weekly email, never to `sections` above -- that list is what
+  # routes items, so trimming it would leave every mention item unrouted, unseen
+  # and re-summarised every day (see src/weekly.py).
+  weekly_sections:
+  - key
+  - notable
   labels:
     key: Worth knowing
     notable: Also happening

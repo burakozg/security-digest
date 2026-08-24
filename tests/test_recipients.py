@@ -76,11 +76,12 @@ def test_normalise_users_drops_invalid_and_duplicate_entries():
         {"name": "Bad", "email": "not-an-email"},
         {"name": "Dupe", "email": "ALICE@EXAMPLE.com"},
     ])
-    assert users == [ALICE]
+    assert users == [{**ALICE, "frequency": "daily"}]
 
 
 def test_normalise_users_falls_back_to_email_as_name():
-    assert normalise_users([{"email": "x@y.com"}]) == [{"name": "x@y.com", "email": "x@y.com"}]
+    assert normalise_users([{"email": "x@y.com"}]) == [
+        {"name": "x@y.com", "email": "x@y.com", "frequency": "daily"}]
 
 
 def test_warns_on_a_topic_addressed_to_an_unknown_recipient():
@@ -157,7 +158,8 @@ def client(tmp_path, monkeypatch):
 
 def test_get_users_lists_recipients_and_what_they_receive(client):
     data = client.get("/admin/users", headers=AUTH).json()
-    assert data["users"] == [{**ALICE, "topics": ["Shared", "His"]}]
+    assert data["users"] == [
+        {**ALICE, "frequency": "daily", "send_day": None, "topics": ["Shared", "His"]}]
 
 
 def test_user_endpoints_require_the_admin_token(client):
@@ -384,3 +386,89 @@ def test_panel_requires_the_admin_token(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "PROJECT_ROOT", tmp_path)
     monkeypatch.setenv("DIGEST_ADMIN_TOKEN", TOKEN)
     assert TestClient(web.app).get("/admin/panel").status_code == 401
+
+
+# --- delivery frequency ---------------------------------------------------
+# A reader can take the same coverage as one weekly email instead of seven
+# daily ones. The cadence is theirs, so it has to travel from users.yaml onto
+# the digest derived for them -- that digest dict is all src/weekly.py sees.
+
+
+def test_a_recipient_is_daily_unless_they_say_otherwise():
+    user = normalise_users([{"name": "A", "email": "a@b.com"}])[0]
+    assert user["frequency"] == "daily"
+    assert "send_day" not in user
+
+
+def test_a_weekly_recipient_gets_a_default_send_day():
+    user = normalise_users([{"name": "A", "email": "a@b.com", "frequency": "weekly"}])[0]
+    assert user == {"name": "A", "email": "a@b.com", "frequency": "weekly", "send_day": "sat"}
+
+
+def test_a_weekly_recipients_chosen_day_is_kept():
+    user = normalise_users([
+        {"name": "A", "email": "a@b.com", "frequency": "Weekly", "send_day": "Monday"}])[0]
+    assert user["frequency"] == "weekly" and user["send_day"] == "mon"
+
+
+def test_send_day_is_not_written_for_a_daily_recipient():
+    """A stale day in the file would read as a setting that is being ignored."""
+    user = normalise_users([
+        {"name": "A", "email": "a@b.com", "frequency": "daily", "send_day": "mon"}])[0]
+    assert "send_day" not in user
+
+
+def test_a_nonsense_cadence_falls_back_rather_than_dropping_the_reader(caplog):
+    """Mail arriving too often is a nuisance; mail not arriving at all is an
+    outage nobody notices."""
+    with caplog.at_level("WARNING"):
+        users = normalise_users([
+            {"name": "A", "email": "a@b.com", "frequency": "fortnightly"},
+            {"name": "B", "email": "b@b.com", "frequency": "weekly", "send_day": "someday"},
+        ])
+    assert users[0]["frequency"] == "daily"
+    assert users[1]["send_day"] == "sat"
+    assert "Unknown frequency" in caplog.text and "Unknown send_day" in caplog.text
+
+
+def test_the_derived_digest_carries_the_readers_cadence():
+    users = normalise_users([
+        {"name": "Him", "email": "him@b.com"},
+        {"name": "Her", "email": "her@b.com", "frequency": "weekly", "send_day": "sun"},
+    ])
+    template = {"sections": ["key", "notable", "mention"], "weekly_sections": ["key"]}
+    him, her = derive_digests(users, [{"name": "T"}], template)
+
+    assert him["frequency"] == "daily"
+    assert "send_day" not in him and "weekly_sections" not in him
+    assert her["frequency"] == "weekly" and her["send_day"] == "sun"
+    # The routing list stays whole; only the printed list is narrowed, and only
+    # for the weekly reader.
+    assert her["sections"] == ["key", "notable", "mention"]
+    assert her["weekly_sections"] == ["key"]
+
+
+def test_the_endpoint_reads_back_what_it_saved(client):
+    r = client.post("/admin/users", headers=AUTH, json={
+        "users": [{**ALICE, "frequency": "weekly", "send_day": "sun"}]})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    saved = client.get("/admin/users", headers=AUTH).json()["users"][0]
+    assert saved["frequency"] == "weekly" and saved["send_day"] == "sun"
+
+
+def test_the_endpoint_rejects_a_cadence_it_cannot_honour(client):
+    r = client.post("/admin/users", headers=AUTH, json={
+        "users": [{**ALICE, "frequency": "hourly"}]})
+    assert r.status_code == 400 and "frequency must be one of" in r.json()["message"]
+
+    r = client.post("/admin/users", headers=AUTH, json={
+        "users": [{**ALICE, "frequency": "weekly", "send_day": "someday"}]})
+    assert r.status_code == 400 and "not a weekday" in r.json()["message"]
+
+
+def test_the_endpoint_offers_the_vocabulary_the_page_selects_from(client):
+    data = client.get("/admin/users", headers=AUTH).json()
+    assert data["frequencies"] == ["daily", "weekly"]
+    assert data["days"] == ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    assert data["default_send_day"] == "sat"

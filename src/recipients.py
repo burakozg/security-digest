@@ -21,6 +21,8 @@ import logging
 import re
 from typing import Any
 
+from src.weekly import DAILY, DAY_NAMES, DAYS, DEFAULT_SEND_WEEKDAY, FREQUENCIES, WEEKLY
+
 log = logging.getLogger(__name__)
 
 # Literal recipient meaning "every user". Not a valid email, so it can't collide
@@ -35,6 +37,35 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 def valid_email(value: str) -> bool:
     return bool(_EMAIL_RE.match((value or "").strip()))
+
+
+DEFAULT_SEND_DAY = DAY_NAMES[DEFAULT_SEND_WEEKDAY]
+
+
+def _frequency(entry: dict[str, Any], who: str) -> str:
+    """How often this reader is emailed. An unrecognised value falls back to
+    daily rather than dropping the reader: getting mail too often is a nuisance,
+    getting none is an outage nobody notices."""
+    raw = str(entry.get("frequency", "") or DAILY).strip().lower()
+    if raw not in FREQUENCIES:
+        log.warning("Unknown frequency %r for %s, treating as %s", raw, who, DAILY)
+        return DAILY
+    return raw
+
+
+def _send_day(entry: dict[str, Any], frequency: str, who: str) -> str | None:
+    """Which weekday a weekly reader's digest goes out. None for a daily one --
+    the field would be meaningless there, so it is not written at all."""
+    if frequency != WEEKLY:
+        return None
+    raw = str(entry.get("send_day", "") or "").strip().lower()[:3]
+    if not raw:
+        return DEFAULT_SEND_DAY
+    if raw not in DAYS:
+        log.warning("Unknown send_day %r for %s, using %s", entry.get("send_day"), who,
+                    DEFAULT_SEND_DAY)
+        return DEFAULT_SEND_DAY
+    return raw
 
 
 def normalise_users(raw: list[Any] | None) -> list[dict[str, str]]:
@@ -56,7 +87,12 @@ def normalise_users(raw: list[Any] | None) -> list[dict[str, str]]:
             log.warning("Skipping duplicate recipient email: %s", email)
             continue
         seen.add(email.casefold())
-        users.append({"name": name, "email": email})
+        frequency = _frequency(entry, email)
+        user = {"name": name, "email": email, "frequency": frequency}
+        send_day = _send_day(entry, frequency, email)
+        if send_day:
+            user["send_day"] = send_day
+        users.append(user)
     return users
 
 
@@ -92,6 +128,9 @@ def derive_digests(
     title_format = template.get("title_format", "{name}'s Digest")
     sections = template.get("sections") or ["key", "notable", "mention"]
     labels = template.get("labels")
+    # Sections a weekly edition actually prints. Narrower than the daily list by
+    # default; see weekly._sections for why it must not narrow `sections` itself.
+    weekly_sections = template.get("weekly_sections")
 
     digests: list[dict[str, Any]] = []
     for user in users:
@@ -110,6 +149,13 @@ def derive_digests(
         }
         if labels:
             digest["labels"] = dict(labels)
+        # Delivery cadence is the reader's, so it travels with them onto the
+        # digest derived for them.
+        digest["frequency"] = user.get("frequency", DAILY)
+        if digest["frequency"] == WEEKLY:
+            digest["send_day"] = user.get("send_day", DEFAULT_SEND_DAY)
+            if weekly_sections:
+                digest["weekly_sections"] = list(weekly_sections)
         digests.append(digest)
     return digests
 

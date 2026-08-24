@@ -20,7 +20,8 @@ from src.dedupe import clear_seen
 from src.history import load_entries
 from src.llm_models import catalog, is_valid_model
 from src.main import run
-from src.recipients import ALL, topics_for_user, valid_email
+from src.recipients import ALL, DEFAULT_SEND_DAY, topics_for_user, valid_email
+from src.weekly import DAILY, DAYS, FREQUENCIES, WEEKLY
 from src.routing import accepts_feed, routing_matrix
 from src.summariser import categories, domains, prompt_vocabulary_drift
 from src.status import get as get_status
@@ -527,11 +528,17 @@ def admin_get_users():
     topics = config.get("topics") or []
     return {
         "users": [
-            {**u, "topics": topics_for_user(topics, u["email"])}
+            {"frequency": DAILY, "send_day": None,
+             **u, "topics": topics_for_user(topics, u["email"])}
             for u in users
         ],
         "derived": bool(config.get("digests_are_derived", True)),
         "digests": [d.get("title", "") for d in (config.get("digests") or [])],
+        # Vocabulary for the frequency and day selectors, so the page never
+        # carries its own copy of a list this module validates against.
+        "frequencies": list(FREQUENCIES),
+        "days": list(DAYS),
+        "default_send_day": DEFAULT_SEND_DAY,
     }
 
 
@@ -568,8 +575,29 @@ def admin_save_users(body: dict = Body(...)):
                 {"ok": False, "message": f"Row {i + 1}: duplicate email {email!r}"},
                 status_code=400,
             )
+        frequency = (u.get("frequency") or DAILY).strip().lower()
+        if frequency not in FREQUENCIES:
+            return JSONResponse(
+                {"ok": False, "message": f"Row {i + 1}: frequency must be one of "
+                                         f"{', '.join(FREQUENCIES)}"},
+                status_code=400,
+            )
+        entry = {"name": name, "email": email, "frequency": frequency}
+        if frequency == WEEKLY:
+            # Only meaningful for a weekly reader, so it is not written for a
+            # daily one -- a stale send_day in the file would read as a setting
+            # that is being ignored.
+            send_day = (u.get("send_day") or DEFAULT_SEND_DAY).strip().lower()
+            if send_day not in DAYS:
+                return JSONResponse(
+                    {"ok": False, "message": f"Row {i + 1}: {send_day!r} is not a weekday "
+                                             f"({', '.join(DAYS)})"},
+                    status_code=400,
+                )
+            entry["send_day"] = send_day
+
         seen.add(email.casefold())
-        cleaned.append({"name": name, "email": email})
+        cleaned.append(entry)
 
     # Removing a recipient orphans any topic addressed to them: still fetched and
     # summarised, delivered to nobody. Name them rather than silently dropping.
@@ -646,7 +674,8 @@ def list_digests():
     return [f.stem for f in base.glob("*.html")]
 
 
-ALLOWED_PROMPTS = {"summarise.txt", "summarise_batch.txt", "cluster.txt", "digest.txt"}
+ALLOWED_PROMPTS = {"summarise.txt", "summarise_batch.txt", "cluster.txt", "digest.txt",
+                   "weekly.txt", "weekly_intro.txt"}
 
 
 @app.get("/admin", response_class=HTMLResponse)

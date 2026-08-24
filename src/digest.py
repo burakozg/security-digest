@@ -71,16 +71,28 @@ def render_markdown(
     items: list[dict[str, Any]],
     config: dict[str, Any],
     digest_cfg: dict[str, Any] | None = None,
+    intro: str | None = None,
+    date_label: str | None = None,
 ) -> str:
-    """Render summarised items as a markdown digest."""
+    """Render summarised items as a markdown digest.
+
+    `date_label` replaces today's date under the title, for an edition covering a
+    period rather than a day. `intro` is an opening paragraph rendered between
+    the header and the first section; both are used by the weekly digest and
+    absent from the daily one."""
     digest_cfg = digest_cfg or config.get("digest", {})
     title = digest_cfg.get("title", "Security Digest")
     sections = digest_cfg.get("sections", ["news", "thought_leadership", "other"])
 
-    today = datetime.date.today().isoformat()
+    today = date_label or datetime.date.today().isoformat()
 
     header = render_template(DIGEST_PROMPT_PATH, title=title, date=today)
     parts = [header, ""]
+    if intro:
+        # Model-written prose about untrusted feed content, so it goes through
+        # the same escaping as every other string on this page.
+        parts.append(_safe_text(intro))
+        parts.append("")
 
     grouped = group_by_section(items, sections)
 
@@ -127,9 +139,11 @@ def build_digest(
     items: list[dict[str, Any]],
     config: dict[str, Any],
     digest_cfg: dict[str, Any] | None = None,
+    intro: str | None = None,
+    date_label: str | None = None,
 ) -> str:
     """Group items by section and render the full digest as markdown."""
-    return render_markdown(items, config, digest_cfg)
+    return render_markdown(items, config, digest_cfg, intro=intro, date_label=date_label)
 
 
 if __name__ == "__main__":

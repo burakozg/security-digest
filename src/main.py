@@ -20,6 +20,8 @@ from src.history import record_sent
 from src.routing import EXCLUDE, accepts_domain, accepts_feed
 from src.status import update as update_status
 from src.utils import PROJECT_ROOT, slug
+from src.weekly import is_weekly, send_day_label, send_due
+from src.weekly import queue as queue_weekly
 
 log = logging.getLogger(__name__)
 
@@ -32,11 +34,12 @@ def _item_links(item: dict) -> set[str]:
     return {l for l in links if l}
 
 
-def _deliver_previous(config: dict, digest_filter: list[str] | None) -> int:
-    """Deliver previously saved digests when there are no new items. Returns count delivered."""
-    digests = config.get("digests") or []
-    if digest_filter:
-        digests = [d for d in digests if slug(d.get("title", "")) in digest_filter]
+def _deliver_previous(config: dict, digests: list[dict]) -> int:
+    """Re-send previously saved digests when there are no new items.
+
+    Weekly digests are excluded by the caller: theirs is an edition covering a
+    period, so there is no "today's digest, unchanged" to re-send -- their queue
+    simply keeps accumulating until their day."""
     delivered = 0
     for d in digests:
         title = d.get("title", "Digest")
@@ -46,6 +49,20 @@ def _deliver_previous(config: dict, digest_filter: list[str] | None) -> int:
             deliver_previous(path, config, title, digest_cfg=d)
             delivered += 1
     return delivered
+
+
+def _resolve_digests(config: dict, digest_filter: list[str] | None) -> list[dict]:
+    """The digests this run covers.
+
+    Resolved before anything else happens because the early-return paths need it
+    too: a day that fetches nothing is still a day a weekly digest may be due."""
+    digests = config.get("digests")
+    if not digests:
+        digests = [config.get("digest", {"title": "Security Digest",
+                                         "sections": ["news", "thought_leadership", "other"]})]
+    if digest_filter:
+        digests = [d for d in digests if slug(d.get("title", "")) in digest_filter]
+    return digests
 
 
 def run(config_path: Path | None = None, digest_filter: list[str] | None = None) -> dict:
@@ -65,12 +82,21 @@ def run(config_path: Path | None = None, digest_filter: list[str] | None = None)
 
     try:
         update_status("running")
+        digests = _resolve_digests(config, digest_filter)
+        if not digests:
+            update_status("success", items=0)
+            return {"success": True, "items": 0, "message": "No matching digests"}
+        daily = [d for d in digests if not is_weekly(d)]
+
         log.info("Fetching security news...")
         items = fetch_all(config)
         if not items:
             log.warning("No items fetched")
+            # A weekly edition is assembled from its queue, not from today, so a
+            # barren fetch is no reason to withhold one that is due.
+            weekly_sent = send_due(config, digests)
             update_status("success", items=0)
-            return {"success": True, "items": 0}
+            return {"success": True, "items": 0, "weekly_sent": weekly_sent}
 
         sources = config.get("sources", {})
         if sources.get("story_dedupe") and config.get("llm", {}).get("cluster"):
@@ -97,24 +123,17 @@ def run(config_path: Path | None = None, digest_filter: list[str] | None = None)
 
         if not items:
             log.info("No new items — delivering previous digest(s)")
-            delivered = _deliver_previous(config, digest_filter)
+            delivered = _deliver_previous(config, daily)
+            weekly_sent = send_due(config, digests)
             update_status("success", items=0, previous_delivered=(delivered > 0))
-            return {"success": True, "items": 0, "previous_delivered": delivered}
+            return {"success": True, "items": 0, "previous_delivered": delivered,
+                    "weekly_sent": weekly_sent}
 
         log.info("Summarising %d items...", len(items))
         summarised = summarise_all(items, config)
         excluded = sum(1 for i in summarised if i.get("category") == "exclude")
         if excluded:
             log.info("Excluded %d items (categorised 'exclude' by the summariser)", excluded)
-
-        digests = config.get("digests")
-        if not digests:
-            digests = [config.get("digest", {"title": "Security Digest", "sections": ["news", "thought_leadership", "other"]})]
-        if digest_filter:
-            digests = [d for d in digests if slug(d.get("title", "")) in digest_filter]
-            if not digests:
-                update_status("success", items=0)
-                return {"success": True, "items": 0, "message": "No matching digests"}
 
         total_delivered = 0
         routed: set[int] = set()
@@ -131,6 +150,19 @@ def run(config_path: Path | None = None, digest_filter: list[str] | None = None)
                     filtered.append(i)
             if not filtered:
                 log.info("No items for '%s', skipping", d.get("title", "digest"))
+                continue
+            # A weekly digest takes its normal turn here -- routing and therefore
+            # mark_seen below are identical to a daily one -- and only the
+            # delivery is deferred. Skipping the digest instead would leave its
+            # items unrouted, so they would be re-fetched and re-summarised at
+            # full token cost every day until the send.
+            if is_weekly(d):
+                queue_weekly(filtered, d.get("title", "Digest"))
+                log.info(
+                    "Holding %d item(s) for '%s' (weekly, sends %s)",
+                    len(filtered), d.get("title"), send_day_label(d),
+                )
+                total_delivered += len(filtered)
                 continue
             log.info("Building digest: %s (%d items)", d.get("title"), len(filtered))
             content = build_digest(filtered, config, d)
@@ -181,6 +213,12 @@ def run(config_path: Path | None = None, digest_filter: list[str] | None = None)
                 "return once routing accepts them", len(keep), len(items),
             )
         mark_seen(keep, retention_days=retention)
+
+        # Last, so that a weekly send failing (or the process dying part-way
+        # through one) cannot cost today's items their seen mark -- they would
+        # otherwise be fetched, summarised and queued all over again tomorrow.
+        send_due(config, digests)
+
         log.info("Done.")
         update_status("success", items=total_delivered)
         return {"success": True, "items": total_delivered}

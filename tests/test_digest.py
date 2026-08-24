@@ -113,3 +113,35 @@ def test_source_is_used_when_there_is_no_publisher():
               "summary": "S", "category": "news"}]
     out = render_markdown(items, {}, {"title": "W", "sections": ["news"]})
     assert "*Krebs on Security*" in out
+
+
+# --- weekly edition rendering ----------------------------------------------
+
+
+def _weekly_config():
+    return {"digest": {"title": "Her News", "sections": ["key"]}}
+
+
+def test_a_date_label_replaces_todays_date():
+    md = render_markdown([{"category": "key", "title": "A", "summary": "s"}],
+                         _weekly_config(), date_label="week of 15 Aug – 22 Aug")
+    assert "week of 15 Aug – 22 Aug" in md
+
+
+def test_an_intro_renders_above_the_first_section():
+    md = build_digest([{"category": "key", "title": "A", "summary": "s"}],
+                      _weekly_config(), intro="A busy week for grid policy.")
+    assert md.index("A busy week for grid policy.") < md.index("## Key")
+
+
+def test_the_intro_is_escaped_like_every_other_model_written_string():
+    """It is written from untrusted feed content, so it goes through _safe_text
+    rather than straight into the markdown."""
+    md = build_digest([{"category": "key", "title": "A", "summary": "s"}],
+                      _weekly_config(), intro='<img src=x onerror=alert(1)> [a](b)')
+    assert "<img" not in md and "[a](b)" not in md
+
+
+def test_a_daily_digest_renders_exactly_as_before():
+    items = [{"category": "key", "title": "A", "summary": "s"}]
+    assert build_digest(items, _weekly_config()) == render_markdown(items, _weekly_config())

@@ -100,6 +100,8 @@ users:
     email: alice@example.com
   - name: Bob
     email: bob@example.com
+    frequency: weekly               # one email a week instead of seven
+    send_day: sat                   # default; "mon".."sun"
 
 # topics.yaml
 topics:
@@ -112,10 +114,37 @@ topics:
 digest_template:
   title_format: "{name}'s News"
   sections: [key, notable, mention]
+  weekly_sections: [key, notable]   # what a weekly edition prints
 ```
 
 Nothing lists digests by hand. Adding a reader is one click in the Recipients
 card; their digest appears as soon as a topic reaches them. A recipient with no topics gets no email rather than an empty one.
+
+### Daily or weekly
+
+Each recipient picks their cadence in the Recipients card. A **weekly** reader
+gets the same coverage as a daily one — their topics are fetched, summarised and
+routed on every run exactly as before — but the send is held and their items are
+queued in `data/digest.db`. On their day the week is re-read in one pass that
+merges a Monday story with its Thursday follow-up into a single entry keeping
+both outlets' links, re-ranks everything against the week rather than the day it
+appeared, and opens with a short paragraph on what kind of week it was.
+`prompts/weekly.txt` and `prompts/weekly_intro.txt` define both, and are editable
+in the admin panel like every other prompt.
+
+`weekly_sections` narrows what the email prints — a week of "Briefly" items is a
+tail nobody reads, and they are all on the History page anyway. It is applied
+when rendering and **never** to `sections`, which is what routes items: trimming
+that would leave the dropped categories unrouted, so they would never be marked
+seen and would be re-fetched and re-summarised at full token cost every day.
+Filtering afterwards is also the right order, since the week's context can
+promote a Monday `mention` into `notable`.
+
+The send is owed until it happens: a container down on the send day, or a mail
+server refusing, sends on the next run rather than costing the week, and the
+queue is only cleared once the email is actually away. A second run the same day
+does not send twice. History records the consolidated entries, not the daily
+ones, so it shows what landed in the inbox.
 
 Hand-written `digests:` still work and are what the security instance uses — an
 instance with no users derives nothing and keeps whatever it declares. An empty
