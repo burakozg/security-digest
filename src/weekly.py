@@ -38,6 +38,7 @@ from src.delivery import deliver
 from src.digest import build_digest
 from src.history import record_sent
 from src.utils import PROJECT_ROOT, render_template, slug
+from src.vault import project_digest
 
 log = logging.getLogger(__name__)
 
@@ -487,6 +488,7 @@ def send_one(
     deliver(content, config, title=title, digest_cfg=digest, subject_note=label)
 
     record_sent(entries, title, config, db_path)
+    project_digest(entries, digest, config, db_path=db_path)
     clear(ids, db_path)
     mark_sent(digest_slug, now, db_path)
     return True

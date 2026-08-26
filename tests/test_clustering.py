@@ -139,3 +139,229 @@ def test_an_unassigned_item_gets_a_category_this_instance_actually_delivers():
     out = _assign_clusters(ITEMS, [DEAL], config)
     orphan = next(o for o in out if o["title"] == ITEMS[1]["title"])
     assert orphan["category"] == "mention"
+
+
+# --- clustering across feeds, in two passes ---------------------------------
+# A publisher instance has the opposite problem to a topic instance. There
+# `source` is the outlet, so grouping per source puts the duplicates worth
+# merging into different groups by construction and clustering achieves nothing.
+
+import pytest
+
+from src.summariser import (
+    _cluster_groups,
+    _combined_description,
+    _summarise_in_batches,
+    _trimmed_for_grouping,
+    cluster_chars,
+    cluster_scope,
+    group_stories,
+)
+
+SEC_CONFIG = {
+    "llm": {"categories": ["news", "other", "exclude"], "fallback_category": "other",
+            "domains": ["security", "ai_ml"], "fallback_domain": "security",
+            "cluster": True, "cluster_scope": "all", "cluster_chars": 800,
+            "batch_size": 8},
+    "sources": {"max_description_chars": 5000},
+}
+
+
+def _sec_items():
+    return [
+        {"title": "Critical RCE in Acme VPN", "link": "https://krebs/1", "source": "Krebs",
+         "publisher": "Krebs", "published": "2026-08-25T10:00:00",
+         "description": "Krebs on the Acme VPN flaw. " + "k" * 2000},
+        {"title": "Acme patches actively exploited flaw", "link": "https://bc/2",
+         "source": "Bleeping Computer", "publisher": "Bleeping Computer",
+         "published": "2026-08-25T11:00:00",
+         "description": "Bleeping adds the patch detail. " + "b" * 2000},
+        {"title": "CISA adds Ivanti flaw to KEV", "link": "https://thn/3",
+         "source": "The Hacker News", "publisher": "The Hacker News",
+         "published": "2026-08-25T09:00:00", "description": "Unrelated. " + "t" * 2000},
+    ]
+
+
+def test_grouping_per_source_cannot_merge_across_outlets():
+    """The reason `llm.cluster: true` alone does nothing on a publisher
+    instance: each outlet is clustered alone, so the cross-outlet duplicates
+    never meet."""
+    groups = _cluster_groups(_sec_items(), {"llm": {}})
+    assert sorted(groups) == ["Bleeping Computer", "Krebs", "The Hacker News"]
+    assert all(len(g) == 1 for g in groups.values())
+
+
+def test_cluster_scope_all_puts_every_feed_in_one_group():
+    groups = _cluster_groups(_sec_items(), SEC_CONFIG)
+    assert len(groups) == 1 and len(next(iter(groups.values()))) == 3
+
+
+def test_an_unknown_scope_falls_back_to_per_source(caplog):
+    """Never silently widen what may be merged on a bad value."""
+    with caplog.at_level("WARNING"):
+        assert cluster_scope({"llm": {"cluster_scope": "everything"}}) == "source"
+    assert "Unknown llm.cluster_scope" in caplog.text
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (None, None), (0, None), (-5, None), ("nonsense", None), (800, 800), ("800", 800),
+])
+def test_cluster_chars_is_read_defensively(raw, expected):
+    assert cluster_chars({"llm": {"cluster_chars": raw}}) == expected
+
+
+def test_the_grouping_call_sees_trimmed_text_but_the_items_keep_theirs():
+    items = _sec_items()
+    trimmed = _trimmed_for_grouping(items, 50)
+    assert all(len(t["description"]) == 50 for t in trimmed)
+    assert all(len(i["description"]) > 1000 for i in items), "originals must be untouched"
+
+
+def test_a_merged_story_pools_every_outlets_text_for_the_summary():
+    """Each outlet carries detail the others left out, which is most of the
+    reason for merging them. Summarising only the first report discards it."""
+    items = _sec_items()
+    merged = _merge_cluster(items, [0, 1], {"title": "T", "summary": "s", "category": "news"},
+                            SEC_CONFIG, pool_descriptions=5000)
+    assert "Krebs on the Acme VPN flaw" in merged["description"]
+    assert "Bleeping adds the patch detail" in merged["description"]
+    assert "[Krebs]" in merged["description"] and "[Bleeping Computer]" in merged["description"]
+
+
+def test_pooling_respects_the_budget():
+    items = _sec_items()
+    merged = _merge_cluster(items, [0, 1], {"title": "T", "summary": "s", "category": "news"},
+                            SEC_CONFIG, pool_descriptions=120)
+    assert len(merged["description"]) <= 120 + len("\n\n")
+
+
+def test_a_single_member_story_keeps_its_own_text_unpooled():
+    items = _sec_items()
+    merged = _merge_cluster(items, [2], {"title": "T", "summary": "s", "category": "news"},
+                            SEC_CONFIG, pool_descriptions=5000)
+    assert merged["description"] == items[2]["description"]
+
+
+def test_combined_description_skips_empty_members():
+    out = _combined_description(
+        [{"description": "", "publisher": "A"}, {"description": "real", "publisher": "B"}], 500)
+    assert out == "[B] real"
+
+
+def test_the_grouping_call_asks_for_groups_only_not_prose():
+    """Headlines and summaries per cluster would be written and then thrown
+    away by the summarising pass, and output tokens are the expensive half."""
+    seen = {}
+
+    def fake(client, config, prompt, schema, kind="summarise"):
+        seen["schema"] = schema
+        seen["prompt"] = prompt
+        return '{"clusters": [{"members": [0, 1]}, {"members": [2]}]}'
+
+    with patch("src.summariser._call_llm", side_effect=fake), \
+         patch("src.summariser.render_template", side_effect=lambda p, **k: k["items"]):
+        merged = group_stories(_sec_items(), object(), SEC_CONFIG, 800)
+
+    props = seen["schema"]["properties"]["clusters"]["items"]["properties"]
+    assert list(props) == ["members"]
+    assert "summary" not in props and "title" not in props
+    # And it was shown the trimmed text, not the full 2000-character articles.
+    assert len(seen["prompt"]) < 4000
+    assert [len(m.get("links", [])) for m in merged] == [2, 1]
+
+
+def test_two_pass_summarises_merged_stories_from_the_full_text():
+    calls = []
+
+    def fake(client, config, prompt, schema, kind="summarise"):
+        calls.append(kind)
+        if kind == "cluster":
+            return '{"clusters": [{"members": [0, 1]}, {"members": [2]}]}'
+        return ('[{"summary": "Merged writeup.", "category": "news", "domain": "security"},'
+                ' {"summary": "Other writeup.", "category": "news", "domain": "security"}]')
+
+    with patch("src.summariser._call_llm", side_effect=fake), \
+         patch("src.summariser._get_client", return_value=object()), \
+         patch("src.summariser.render_template", side_effect=lambda p, **k: k.get("items", "")):
+        out = _cluster_all(_sec_items(), object(), SEC_CONFIG)
+
+    assert calls == ["cluster", "batch"], "one grouping call, then one summarising batch"
+    assert len(out) == 2
+    merged = next(o for o in out if len(o["links"]) == 2)
+    assert merged["summary"] == "Merged writeup."
+    # The merge survives the summarising pass -- both outlets still credited.
+    assert [l["publisher"] for l in merged["links"]] == ["Krebs", "Bleeping Computer"]
+
+
+def test_a_failed_grouping_call_still_delivers_the_day_unmerged():
+    """Unmerged reads as duplicates, which the reader can skim. Re-raising would
+    read as silence."""
+    def fake(client, config, prompt, schema, kind="summarise"):
+        if kind == "cluster":
+            raise RuntimeError("model unavailable")
+        return ('[{"summary": "s", "category": "news", "domain": "security"},'
+                ' {"summary": "s", "category": "news", "domain": "security"},'
+                ' {"summary": "s", "category": "news", "domain": "security"}]')
+
+    with patch("src.summariser._call_llm", side_effect=fake), \
+         patch("src.summariser._get_client", return_value=object()), \
+         patch("src.summariser.render_template", side_effect=lambda p, **k: k.get("items", "")):
+        out = _cluster_all(_sec_items(), object(), SEC_CONFIG)
+
+    assert len(out) == 3 and all(o["summary"] == "s" for o in out)
+
+
+def test_one_pass_clustering_is_unchanged_when_cluster_chars_is_unset():
+    """The topic instance must keep behaving exactly as before."""
+    calls = []
+
+    def fake(client, config, prompt, schema, kind="summarise"):
+        calls.append(kind)
+        return ('{"clusters": [{"title": "T", "summary": "s", "category": "key",'
+                ' "members": [0, 1, 2]}]}')
+
+    with patch("src.summariser._call_llm", side_effect=fake), \
+         patch("src.summariser._get_client", return_value=object()), \
+         patch("src.summariser.render_template", side_effect=lambda p, **k: k.get("items", "")):
+        out = _cluster_all(ITEMS, object(), NEWS_CONFIG)
+
+    assert calls == ["cluster"], "no second pass"
+    assert len(out) == 1 and out[0]["summary"] == "s"
+
+
+def test_the_grouping_pass_treats_unlisted_items_as_standing_alone(caplog):
+    """The grouping prompt asks for groups of two or more, so most items are
+    absent from the response by design. Warning about that every run would be
+    noise -- and would bury the case where a one-pass cluster really did drop
+    something."""
+    items = _sec_items()
+    with caplog.at_level("WARNING"):
+        out = _assign_clusters(items, [{"members": [0, 1]}], SEC_CONFIG,
+                               singletons_implicit=True)
+    assert len(out) == 2
+    assert "unassigned" not in caplog.text
+
+
+def test_one_pass_clustering_still_warns_about_a_dropped_item():
+    """There an omission is a real fault: the item loses the summary and
+    category the same call was supposed to give it."""
+    caplog_text = []
+    import logging
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            caplog_text.append(record.getMessage())
+
+    logger = logging.getLogger("src.summariser")
+    handler = _Grab(level=logging.WARNING)
+    logger.addHandler(handler)
+    try:
+        _assign_clusters(_sec_items(), [{"members": [0]}], SEC_CONFIG)
+    finally:
+        logger.removeHandler(handler)
+    assert any("unassigned" in m for m in caplog_text)
+
+
+def test_a_day_with_no_duplicates_returns_every_item_untouched():
+    out = _assign_clusters(_sec_items(), [], SEC_CONFIG, singletons_implicit=True)
+    assert len(out) == 3 and all(len(o["links"]) == 1 for o in out)

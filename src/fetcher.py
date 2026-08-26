@@ -14,7 +14,7 @@ from src import feed_health
 from src.feed_health import EMPTY, ERROR, OK, error_detail
 from src.recipients import derive_digests, normalise_users, warn_on_unknown_recipients
 from src.retry import retry
-from src.routing import apply_feed_routing
+from src.routing import apply_feed_routing, warn_on_cross_feed_clustering
 from src.settings import validate_config
 from src.topics import (
     clean_link,
@@ -184,6 +184,11 @@ def load_config(config_path: str | Path = "config.yaml") -> dict[str, Any]:
     # that rather than written out a second time in config.yaml. Runs after the
     # declared-vs-derived decision above so it can see the final digest list.
     for message in apply_feed_routing(config):
+        log.warning("%s", message)
+
+    # Runs after routing is derived, so it sees the final digest lists rather
+    # than the empty ones a feed-routed config starts with.
+    for message in warn_on_cross_feed_clustering(config):
         log.warning("%s", message)
 
     # Load schedule from external file if specified

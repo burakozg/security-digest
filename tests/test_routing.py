@@ -289,3 +289,62 @@ def test_a_feed_missing_the_digests_key_alongside_others_warns():
     messages = apply_feed_routing(config)
 
     assert any("Forgotten" in m and "delivered nowhere" in m for m in messages)
+
+
+# --- cross-feed clustering safety -------------------------------------------
+# Merging across feeds keeps the FIRST member's `source`, and accepts_feed
+# decides delivery from that one name. That is only free of risk while every
+# feed reaches the same digests.
+
+from src.routing import warn_on_cross_feed_clustering
+
+_DIGESTS = [
+    {"title": "Security Digest", "domain": "security", "sections": ["news"]},
+    {"title": "AI News", "domain": "ai_ml", "sections": ["news"]},
+]
+
+
+def _cfg(feeds, scope="all"):
+    config = {
+        "llm": {"cluster": True, "cluster_scope": scope},
+        "sources": {"rss": feeds},
+        "digests": [dict(d) for d in _DIGESTS],
+    }
+    apply_feed_routing(config)
+    return config
+
+
+def test_no_warning_when_every_feed_reaches_the_same_digests():
+    config = _cfg([
+        {"name": "Krebs", "url": "u", "digests": ["Security Digest", "AI News"]},
+        {"name": "Bleeping", "url": "u", "digests": ["Security Digest", "AI News"]},
+    ])
+    assert warn_on_cross_feed_clustering(config) == []
+
+
+def test_a_restricted_feed_makes_cross_feed_merging_unsafe():
+    """One untick in the admin panel is all it takes, and the loss is silent:
+    a story covered by both feeds reaches only the survivor's digests."""
+    config = _cfg([
+        {"name": "Krebs", "url": "u", "digests": ["Security Digest", "AI News"]},
+        {"name": "Bleeping", "url": "u", "digests": ["Security Digest", "AI News"]},
+        {"name": "Forbes", "url": "u", "digests": ["AI News"]},
+    ])
+    messages = warn_on_cross_feed_clustering(config)
+    assert len(messages) == 1
+    # The minority is the actionable half, so that is what gets named.
+    assert "Forbes" in messages[0]
+    assert "Krebs" not in messages[0] and "Bleeping" not in messages[0]
+
+
+def test_the_check_is_silent_unless_cross_feed_clustering_is_on():
+    config = _cfg([
+        {"name": "Krebs", "url": "u", "digests": ["Security Digest", "AI News"]},
+        {"name": "Forbes", "url": "u", "digests": ["AI News"]},
+    ], scope="source")
+    assert warn_on_cross_feed_clustering(config) == []
+
+
+def test_a_single_feed_cannot_be_inconsistent_with_itself():
+    config = _cfg([{"name": "Krebs", "url": "u", "digests": ["AI News"]}])
+    assert warn_on_cross_feed_clustering(config) == []

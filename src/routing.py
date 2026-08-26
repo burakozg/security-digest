@@ -126,6 +126,52 @@ def apply_feed_routing(config: dict[str, Any]) -> list[str]:
     return messages
 
 
+def warn_on_cross_feed_clustering(config: dict[str, Any]) -> list[str]:
+    """Report feeds that make llm.cluster_scope: all unsafe.
+
+    Clustering across feeds merges several reports into one item, and the merged
+    item keeps the FIRST member's `source`. accepts_feed then decides delivery
+    from that one name, so if two feeds reach different digests, a story covered
+    by both is delivered as though only the survivor had carried it -- and the
+    other digest silently loses it.
+
+    While every feed reaches the same set of digests, which is the case this
+    setting is for, the surviving name cannot change the answer and merging is
+    free of that risk. This exists so that restricting one feed later -- a
+    single untick in the admin panel -- does not quietly reintroduce it."""
+    if str((config.get("llm") or {}).get("cluster_scope", "")).strip().lower() != "all":
+        return []
+
+    digests = config.get("digests") or []
+    feeds = all_feeds(config)
+    if not digests or len(feeds) < 2:
+        return []
+
+    reach: dict[str, tuple[str, ...]] = {}
+    for feed in feeds:
+        name = str(feed["name"]).strip()
+        reach[name] = tuple(sorted(
+            str(d.get("title", "")) for d in digests if accepts_feed(d, name)
+        ))
+
+    distinct = set(reach.values())
+    if len(distinct) < 2:
+        return []
+
+    # Name the minority: with one odd feed out of fifteen, listing the fourteen
+    # is not the actionable half.
+    counts = {sig: sum(1 for v in reach.values() if v == sig) for sig in distinct}
+    majority = max(counts, key=lambda sig: counts[sig])
+    odd = sorted(n for n, sig in reach.items() if sig != majority)
+    return [
+        f"llm.cluster_scope is 'all', which merges items across feeds, but "
+        f"{', '.join(odd)} reach{'' if len(odd) > 1 else 'es'} a different set of digests "
+        f"from the rest. A story covered by one of these and by another feed is "
+        f"delivered as though only one had carried it, so a digest can silently lose "
+        f"it. Give every feed the same digests, or set cluster_scope back to 'source'."
+    ]
+
+
 def accepts_domain(digest: dict[str, Any], domain: str | None) -> bool:
     """Whether a digest carries this subject area.
 
