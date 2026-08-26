@@ -3,8 +3,8 @@ git-tracked base files (sources.yaml, config.yaml) before a deploy pushes a
 new copy of those files up.
 
 Why this exists: sources.yaml and config.yaml's llm: block are mounted
-read-only in the container (see docker-compose.yml / deploy.sh /
-deploy-native.sh / container-station-app.yaml) -- the admin panel can't write
+read-only in the container (see docker-compose.yml / deploy /
+container-station-app.yaml) -- the admin panel can't write
 to them directly, so it writes to a separate file in the persistent data/
 directory instead (data/sources_overrides.yaml, data/llm_overrides.yaml).
 load_config() then has that override file completely replace the
@@ -13,7 +13,8 @@ corresponding section from the base file whenever it's present.
 That's simple, but it means once an override file exists, editing the base
 file in git and deploying has no effect on runtime behaviour at all -- the
 override always wins. This module pulls a copy of each override off the
-target (deploy.sh/deploy-native.sh SCP it down before calling this), merges
+target (./deploy streams it down over ssh before calling this -- never scp,
+which this NAS's sshd cannot do), merges
 it into the local base file, and reports what changed. After a successful
 deploy, the caller deletes the override on the target -- the freshly-pushed
 base file now covers everything the override held, so nothing is lost by
@@ -28,7 +29,7 @@ back, and then deleted the override, leaving no trace of why. Two dead feeds
 removed by hand on 2026-08-20 reappeared exactly this way.
 
 So sources reconciliation takes a stamp of the feed names as last deployed
-(deploy.sh keeps it on the target at data/.deployed-sources), the same trick
+(./deploy keeps it on the target at data/.deployed-sources), the same trick
 the prompt files already use. A name in the stamp and in the override but no
 longer in the base was deliberately deleted, and stays deleted. A name absent
 from the stamp is a genuine panel addition and is merged in. With no stamp

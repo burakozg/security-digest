@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Deliberately no config.yaml/sources.yaml/schedule.txt/prompts baked in: one
 # image serves every instance (see instances/), and each supplies its own copies
-# by bind mount at run time (docker-compose.yml, deploy.sh, deploy-native.sh,
+# by bind mount at run time (docker-compose.yml, deploy,
 # container-station-app.yaml). Baking one instance's files would give the others
 # a silent, wrong fallback whenever a mount is misconfigured; with none baked,
 # load_config() raises a clear "Config not found" instead.

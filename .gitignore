@@ -2,7 +2,7 @@
 instances/*/.env
 
 # Local deploy config (real NAS host/IPs — see deploy.env.example)
-.deploy.env
+.deploy.env*
 deploy-out/
 .venv/
 data/

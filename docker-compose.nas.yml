@@ -1,0 +1,126 @@
+# The NAS deployment: BOTH instances, one compose project.
+#
+# Shipped to the NAS by `./deploy` and brought up over ssh with
+# `docker compose up -d`. It is NOT a Container Station "Application" any more,
+# and that is deliberate.
+#
+# Why it stopped being one: a Container Station Application is a plain compose
+# project too (same docker compose v2.29.1) — the difference is only that
+# Container Station keeps its OWN copy of the YAML under
+# .qpkg/container-station/data/application/<name>/, and "Recreate" re-reads that
+# copy rather than this file. Every change here needed a manual re-paste to take
+# effect, and forgetting was silent. Three things made the trade a bad one:
+#
+#   * the deploy could not be one command — render, paste, click;
+#   * Container Station rejects resource limits in the pasted YAML and wants
+#     them in its own panel, so they could not be version-controlled here (the
+#     panel it generated for these two services held nothing but zeros);
+#   * nothing was gained in exchange. Surviving a NAS reboot comes from
+#     `restart: unless-stopped` below, which the docker daemon honours whoever
+#     started the container — not from being an Application.
+#
+# Container Station still owns the qnet macvlan network this joins as
+# `external: true`, and still shows these containers under Containers. Only the
+# Application wrapper is gone.
+#
+# `name:` pins the compose project rather than letting it default to the
+# directory name. It is the ORIGINAL Container Station project name on purpose:
+# the running containers carry com.docker.compose.project=daily-digests, so
+# keeping it means `compose up -d` adopts and recreates them in place instead of
+# trying to create a second pair alongside.
+#
+# The two static qnet IPs are placeholder tokens here and are filled in from
+# .deploy.env when `./deploy` renders this file — real addresses never land in a
+# tracked file. The rendered copy goes to deploy-out/ and is what gets shipped.
+#
+# What is mounted, and why:
+#   config.yaml, sources.yaml, schedule.txt  read-only; deployed from the repo.
+#   topics.yaml   read-only SEED. Only used by an instance that has never run;
+#                 the live list is data/topics.yaml, written by the admin panel.
+#   data/         read-write and never touched by a deploy. Holds digest.db plus
+#                 the live topics.yaml and users.yaml. Recipients live ONLY here
+#                 -- there is deliberately no /app/users.yaml mount.
+#   prompts/      read-write: the admin panel's prompt editor writes in place.
+#   output/       read-write: rendered digest HTML for the dashboard.
+#
+# With their own LAN addresses the containers are reached directly on port 8080,
+# so there is no `ports:` mapping. Expect the NAS host itself to be unable to
+# reach them: a host cannot talk to its own macvlan children.
+#
+# Secrets stay out of this file. Each instance reads its own .env from its
+# directory via env_file, each with its OWN DIGEST_ADMIN_TOKEN -- sharing one
+# lets either admin panel drive the other. Generate: openssl rand -hex 32
+#
+# One-time setup per instance (the container runs as UID 1000 and nothing here
+# chmods, so `./deploy` verifies these and tells you if they need fixing by hand):
+#   cd /share/Container/<name>-digest && mkdir -p data output/web prompts \
+#     && chmod -R 777 data output prompts
+#
+# MAC ADDRESSES ARE PINNED, and that is load-bearing. These containers sit on a
+# macvlan in a /25; anything on another subnet reaches them through a
+# router. Docker assigns a random MAC on every `create`, so each recreate used to
+# change it — and the router went on answering for the OLD MAC until its
+# neighbour entry aged out. The result is a container that is "Up (healthy)",
+# has correct routes, can reach the internet, and is unreachable inbound: the
+# healthcheck runs inside the container against localhost and cannot see the
+# problem. It self-heals once the container sends anything outbound, which makes
+# it maddening to diagnose because it comes right on its own.
+#
+# Pinned to docker's own convention, 02:42 followed by the four address octets,
+# so each is stable, derivable and cannot collide with another container's.
+# Set PER NETWORK rather than on the service: a service-level `mac_address:`
+# applies to only one of a container's interfaces, so on a service that later
+# gains a second network it silently pins the wrong one. (That is not
+# hypothetical — it happened to the podcast agent, where it landed on the
+# internal bridge and left the LAN-facing interface randomised.)
+#
+# Placeholders here, filled in by `./deploy` from .deploy.env alongside the IPs:
+# the derived value encodes the real address (its last four octets ARE the
+# address), so it must no more be tracked in git than the address itself.
+
+name: daily-digests
+
+services:
+  security-digest:
+    image: security-digest
+    container_name: security-digest-web
+    restart: unless-stopped
+    volumes:
+      - /share/Container/security-digest/config.yaml:/app/config.yaml:ro
+      - /share/Container/security-digest/sources.yaml:/app/sources.yaml:ro
+      - /share/Container/security-digest/topics.yaml:/app/topics.yaml:ro
+      - /share/Container/security-digest/schedule.txt:/app/schedule.txt:ro
+      - /share/Container/security-digest/data:/app/data
+      - /share/Container/security-digest/output:/app/output
+      - /share/Container/security-digest/prompts:/app/prompts
+    env_file:
+      - /share/Container/security-digest/.env
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    networks:
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: APP_LAN_IP_SECURITY_PLACEHOLDER
+        mac_address: APP_MAC_SECURITY_PLACEHOLDER
+
+  news-digest:
+    image: security-digest
+    container_name: news-digest-web
+    restart: unless-stopped
+    volumes:
+      - /share/Container/news-digest/config.yaml:/app/config.yaml:ro
+      - /share/Container/news-digest/sources.yaml:/app/sources.yaml:ro
+      - /share/Container/news-digest/topics.yaml:/app/topics.yaml:ro
+      - /share/Container/news-digest/schedule.txt:/app/schedule.txt:ro
+      - /share/Container/news-digest/data:/app/data
+      - /share/Container/news-digest/output:/app/output
+      - /share/Container/news-digest/prompts:/app/prompts
+    env_file:
+      - /share/Container/news-digest/.env
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    networks:
+      qnet-static-eth1-dc7e3a:
+        ipv4_address: APP_LAN_IP_NEWS_PLACEHOLDER
+        mac_address: APP_MAC_NEWS_PLACEHOLDER
+
+networks:
+  qnet-static-eth1-dc7e3a:
+    external: true

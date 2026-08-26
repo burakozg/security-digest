@@ -1,0 +1,433 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Deploy one or more instances to the NAS.
+#
+#   ./deploy                           every instance under instances/
+#   ./deploy --instance news           just that one
+#   ./deploy --instance news --instance security   both, explicitly
+#   ./deploy ship                      build, ship and sync config; containers untouched
+#   ./deploy apply                     render the Container Station YAML to paste
+#   ./deploy render                    same as apply, without the config sync
+#   ./deploy --build-on nas            build the image ON the NAS instead of here
+#
+# See homelab/README.md for the verb contract shared with the three sibling NAS
+# projects. This used to be two scripts — deploy.sh and deploy-native.sh —
+# differing only in where the image was built, and they had already drifted: the
+# native one called src.reconcile without the stamp argument, so it silently
+# lost the protection against reverting admin-panel edits to sources.yaml and
+# the llm: block. One script, one --build-on flag.
+#
+# LIFECYCLE=compose. `apply` ships docker-compose.nas.yml and runs
+# `docker compose up -d` over ssh — no UI step, no clipboard, no Recreate click.
+# These used to be a Container Station "Application"; see docker-compose.nas.yml's
+# header for why they are not any more.
+#
+# The old --skip-run flag existed because this script once ran its own container
+# with the pre-Container-Station convention (port mappings, no static IP), and
+# would silently revert a managed container to it. That code is gone, so the
+# flag is gone with it — `--no-apply` remains if you want to stop after `ship`.
+#
+# Deploying everything is the default because the alternative -- defaulting to
+# one instance -- means a plain `./deploy` silently leaves the others running
+# stale config, with nothing in the output to say so. That happened: a deploy
+# that looked like it covered both instances pushed only one, and the other was
+# left without a prompt file its config required.
+
+cd "$(dirname "$0")"
+. ./deploy.lib.sh
+
+BUILD_ON="${BUILD_ON:-mac}"
+INSTANCES=""
+VERB=""
+while [ $# -gt 0 ]; do
+  if nas_global_flag "$1"; then :
+  else
+    case "$1" in
+      --instance) INSTANCES="${INSTANCES} ${2:?--instance needs a name}"; shift ;;
+      --instance=*) INSTANCES="${INSTANCES} ${1#*=}" ;;
+      --build-on) BUILD_ON="${2:?--build-on needs mac or nas}"; shift ;;
+      --build-on=*) BUILD_ON="${1#*=}" ;;
+      --render-station)
+        die "--render-station is now the 'render' verb: ./deploy render" ;;
+      -*) echo "Unknown argument: $1" >&2; exit 2 ;;
+      *) [ -z "$VERB" ] && VERB="$1" || { echo "Unexpected argument: $1" >&2; exit 2; } ;;
+    esac
+  fi
+  shift
+done
+
+case "$BUILD_ON" in
+  mac|nas) ;;
+  *) die "--build-on takes 'mac' (cross-compile here) or 'nas' (build there), not '${BUILD_ON}'." ;;
+esac
+
+# NAS_APP_DIR is where the compose project lives — deliberately NOT an instance
+# directory, since one project covers every instance and each instance keeps its
+# own state under /share/Container/<name>-digest. The basename matches the
+# compose project name (`name: daily-digests`), which is the name the running
+# containers were already labelled with under Container Station.
+nas_load_env "$PWD" "/share/Container/daily-digests"
+
+# Instance-independent on purpose: every instance runs the identical image, and
+# container-station-app.yaml refers to this name. Changing it would orphan the
+# Container Station application.
+IMAGE_NAME="security-digest"
+# Disposable build checkout on the NAS, shared by every instance and never an
+# instance directory — so nothing here can touch a seen-store, history or digest
+# output. Only used with --build-on nas.
+BUILD_PATH="${NAS_BUILD_DIR:-/share/Container/security-digest-build}"
+NAS_COMPOSE="docker-compose.nas.yml"
+# Rendered with the real qnet IPs substituted in; git-ignored, and the copy that
+# actually gets shipped. The tracked template keeps its placeholders.
+RENDERED="deploy-out/docker-compose.nas.yml"
+
+# Files that make up an instance. Flat on the target (the container sees them at
+# /app), nested under instances/<name>/ here. Deliberately absent: users.yaml and
+# the live topics list, which live in data/ and are owned by the admin panel.
+INSTANCE_FILES="config.yaml sources.yaml topics.yaml schedule.txt prompts/summarise.txt prompts/summarise_batch.txt prompts/cluster.txt prompts/digest.txt prompts/weekly.txt prompts/weekly_intro.txt"
+PROMPT_FILES="prompts/summarise.txt prompts/summarise_batch.txt prompts/cluster.txt prompts/digest.txt prompts/weekly.txt prompts/weekly_intro.txt"
+# Hashes of the prompts as last deployed, kept on the target. Lives in data/
+# because that is the one directory mounted read-write on every instance.
+PROMPT_STAMP="data/.deployed-prompts"
+# Feed names as last deployed. Without it, a feed in the admin-panel override but
+# missing from sources.yaml is indistinguishable from one the panel just added,
+# so deleting a feed by hand was silently undone by the next deploy. Same trick,
+# same directory, same reason as PROMPT_STAMP above.
+SOURCES_STAMP="data/.deployed-sources"
+# The llm: block as last deployed -- same purpose again, for the keys the admin
+# panel writes (provider, model). Without it the override wins unconditionally,
+# so editing or removing one of those keys in config.yaml was silently reverted.
+LLM_STAMP="data/.deployed-llm"
+
+target_path() { echo "/share/Container/${1}-digest"; }
+
+if [ -x ".venv/bin/python" ]; then
+  PYTHON=".venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
+resolve_instances() {
+  if [ -z "${INSTANCES// /}" ]; then
+    INSTANCES="$(ls -1 instances 2>/dev/null | tr '\n' ' ')"
+  fi
+  if [ -z "${INSTANCES// /}" ]; then
+    die "No instances found under instances/"
+  fi
+  for inst in ${INSTANCES}; do
+    if [ ! -d "instances/${inst}" ]; then
+      echo "No such instance: instances/${inst}" >&2
+      echo "Available: $(ls -1 instances 2>/dev/null | tr '\n' ' ')" >&2
+      exit 2
+    fi
+  done
+}
+
+TMP_FILES=""
+trap 'rm -f ${TMP_FILES}' EXIT
+
+# ---------------------------------------------------------------------------
+# 1. Reconcile admin-panel state back into the git-tracked files, per instance.
+#
+# sources.yaml and config.yaml's llm: block are mounted read-only, so the admin
+# panel writes to data/sources_overrides.yaml / data/llm_overrides.yaml instead,
+# and those override the base file completely while they exist. Pull them down,
+# merge, and only afterwards delete them on the target.
+#
+# Files are pulled with nas_get (`ssh ... cat`), never scp: this NAS's sshd
+# exposes no SFTP subsystem, so every scp fails with "subsystem request failed
+# on channel 0". Written as `scp ... 2>/dev/null || true` that failure was
+# invisible -- the merge silently did nothing while the delete still ran, which
+# is how admin-panel edits were destroyed by a deploy.
+# ---------------------------------------------------------------------------
+CLEARABLE=""
+reconcile_instances() {
+  for inst in ${INSTANCES}; do
+    local tp dir
+    tp="$(target_path "${inst}")"
+    dir="instances/${inst}"
+    echo "==> [${inst}] reconciling admin-panel state from ${tp}"
+
+    for kind in sources llm; do
+      local tmp base kstamp remote_stamp
+      tmp="$(mktemp -t "digest-${kind}-override")"; rm -f "${tmp}"
+      TMP_FILES="${TMP_FILES} ${tmp}"
+      base="${dir}/sources.yaml"; [ "${kind}" = llm ] && base="${dir}/config.yaml"
+
+      if nas_get "${tp}/data/${kind}_overrides.yaml" "${tmp}"; then
+        # Only a file we actually merged may be deleted on the target afterwards.
+        CLEARABLE="${CLEARABLE} ${inst}:${kind}"
+      elif nas_exists "${tp}/data/${kind}_overrides.yaml"; then
+        echo "  !! ${kind}_overrides.yaml exists on the target but could not be pulled." >&2
+        echo "     Leaving it in place rather than deleting unmerged admin-panel edits." >&2
+      fi
+      kstamp="$(mktemp -t digest-kind-stamp)"; TMP_FILES="${TMP_FILES} ${kstamp}"
+      remote_stamp="${SOURCES_STAMP}"; [ "${kind}" = llm ] && remote_stamp="${LLM_STAMP}"
+      # No stamp on the target yet means "assume nothing was edited by hand", which
+      # is the pre-stamp behaviour -- so an empty file here is a safe fallback, not
+      # a failure. rm it so reconcile sees a genuinely absent stamp rather than an
+      # empty one it would read as "nothing was ever deployed".
+      nas_get "${tp}/${remote_stamp}" "${kstamp}" || rm -f "${kstamp}"
+      # FOUR arguments, including the stamp. deploy-native.sh passed three, which
+      # disabled exactly the protection the stamp exists for. Do not "simplify".
+      "${PYTHON}" -m src.reconcile "${kind}" "${base}" "${tmp}" "${kstamp}"
+    done
+
+    # prompts/*.txt has no base/override split -- the admin panel writes them in
+    # place, so the target's copy IS the live truth once anyone has edited one in
+    # the browser, and a deploy must not clobber that.
+    #
+    # "Target differs from repo" is NOT enough to conclude someone edited it in the
+    # browser: it is equally true when the repo is deliberately ahead. Deciding on
+    # that alone made prompt changes undeployable -- the target's older copy was
+    # pulled back over them every time, reverting the working tree, while an edited
+    # config.yaml went up regardless. That combination is the worst case: a schema
+    # enforcing one vocabulary and a prompt teaching another, which fails silently
+    # by coercing every item into the fallback section.
+    #
+    # So compare against what this script last deployed, recorded on the target in
+    # ${PROMPT_STAMP}. Target unchanged since then means nobody edited it and the
+    # repo wins; any difference from the stamp is a real browser edit and is pulled
+    # down as before. A target with no stamp yet (first deploy after this change)
+    # is treated as edited -- the safe assumption, since it may hold edits made
+    # before anything was recorded.
+    local stamp
+    stamp="$(mktemp -t digest-stamp)"; TMP_FILES="${TMP_FILES} ${stamp}"
+    nas_get "${tp}/${PROMPT_STAMP}" "${stamp}" || : > "${stamp}"
+    for f in ${PROMPT_FILES}; do
+      local tmp recorded current
+      tmp="$(mktemp -t digest-prompt)"; TMP_FILES="${TMP_FILES} ${tmp}"
+      nas_get "${tp}/${f}" "${tmp}" || continue
+      diff -q "${tmp}" "${dir}/${f}" > /dev/null 2>&1 && continue
+
+      recorded="$(awk -v k="${f}" '$2 == k { print $1 }' "${stamp}")"
+      current="$(shasum -a 256 "${tmp}" | awk '{print $1}')"
+      if [ -n "${recorded}" ] && [ "${recorded}" = "${current}" ]; then
+        echo "  -> ${f} unchanged on the target since the last deploy -- pushing the repo version"
+      else
+        echo "  -> ${f} was edited in the browser -- pulling it down (review with git diff)"
+        cp "${tmp}" "${dir}/${f}"
+      fi
+    done
+  done
+}
+
+# ---------------------------------------------------------------------------
+# 2. Build the image ONCE. Every instance runs the same image, so doing this per
+#    instance would repeat identical work (and, on the mac path, re-send ~58MB).
+# ---------------------------------------------------------------------------
+build_image() {
+  if [ "$BUILD_ON" = nas ]; then
+    echo "==> NAS processor architecture (informational -- native build, no emulation):"
+    echo "    uname -m:       $(nas_ssh "uname -m")"
+    echo "    docker reports: $(nas_ssh "'${NAS_DOCKER_BIN}' info --format '{{.Architecture}}'" 2>/dev/null || echo unknown)"
+
+    # Wiped and re-pushed rather than rsync'd: rsync is not something this NAS's
+    # ssh setup can be relied on for, and the directory is disposable anyway, so
+    # "delete it and send the build context again" is both simpler and a
+    # stronger guarantee than --delete. Only requirements.txt and src/ are
+    # needed — see the Dockerfile, which deliberately bakes in nothing else.
+    echo "==> Syncing the build context to ${NAS_SSH}:${BUILD_PATH} (disposable -- never an instance dir)..."
+    nas_ssh "rm -rf '${BUILD_PATH}' && mkdir -p '${BUILD_PATH}'"
+    nas_put Dockerfile "${BUILD_PATH}/Dockerfile"
+    nas_put requirements.txt "${BUILD_PATH}/requirements.txt"
+    nas_put_tree "${BUILD_PATH}" src
+
+    nas_build_image_remote "${IMAGE_NAME}" "${BUILD_PATH}"
+  else
+    nas_ship_image "${IMAGE_NAME}" "$PWD"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 3. Per instance: sync mounted files, record the stamps, drop merged overrides,
+#    and make sure the writable directories really are writable.
+# ---------------------------------------------------------------------------
+sync_instances() {
+  for inst in ${INSTANCES}; do
+    local tp dir
+    tp="$(target_path "${inst}")"
+    dir="instances/${inst}"
+
+    # Mounts read files on the target host -- the image alone does not update them.
+    echo "==> [${inst}] syncing config files to ${tp}"
+    for f in ${INSTANCE_FILES}; do
+      echo "  -> ${f}"
+      nas_put "${dir}/${f}" "${tp}/${f}"
+    done
+
+    # Record what the prompts look like as deployed, so the next run can tell a
+    # browser edit from a target that simply hasn't been touched. Written after the
+    # push and from the files as pushed, so the stamp always describes what is
+    # actually on the target.
+    ( cd "${dir}" && shasum -a 256 ${PROMPT_FILES} ) \
+      | nas_ssh "cat > '${tp}/${PROMPT_STAMP}'"
+
+    # Same idea for the feed list: record the names as just pushed, so the next
+    # deploy can tell a feed deleted from sources.yaml (in the stamp, absent from
+    # the base) from one the admin panel added (in neither).
+    "${PYTHON}" -c "import sys,yaml;d=yaml.safe_load(open(sys.argv[1]))or{};print('\n'.join(f['name'] for f in (d.get('rss') or []) if isinstance(f,dict) and f.get('name')))" "${dir}/sources.yaml" \
+      | nas_ssh "cat > '${tp}/${SOURCES_STAMP}'"
+
+    # And the llm: block as pushed, for the same comparison next time.
+    "${PYTHON}" -c "import sys,yaml;d=yaml.safe_load(open(sys.argv[1]))or{};print(yaml.dump(d.get('llm') or {}, default_flow_style=False, sort_keys=False), end='')" "${dir}/config.yaml" \
+      | nas_ssh "cat > '${tp}/${LLM_STAMP}'"
+
+    # The base files just pushed are a superset of whatever the overrides held, so
+    # the overrides can go -- but only the ones we actually merged. These are
+    # read-only bind mounts, not baked into the image, so this takes effect on the
+    # next request the running container handles, whether or not anything restarts.
+    local clear_paths=""
+    for entry in ${CLEARABLE}; do
+      case "${entry}" in
+        "${inst}:sources") clear_paths="${clear_paths} '${tp}/data/sources_overrides.yaml'" ;;
+        "${inst}:llm")     clear_paths="${clear_paths} '${tp}/data/llm_overrides.yaml'" ;;
+      esac
+    done
+    if [ -n "${clear_paths}" ]; then
+      echo "  -> clearing reconciled overrides"
+      nas_ssh "rm -f ${clear_paths}"
+    fi
+
+    echo "==> [${inst}] checking the writable directories"
+    nas_ssh bash -s -- "${tp}" << 'REMOTE'
+  set -euo pipefail
+  TARGET_PATH="$1"
+  cd "${TARGET_PATH}"
+
+  # The container runs as a non-root user; data/ and output/ are world-writable
+  # in the image but bind mounts inherit the host directory's own permissions,
+  # so make sure they're writable here too regardless of which host user owns
+  # them (mkdir is a no-op if they already exist).
+  mkdir -p data output/web prompts
+  # chmod only works on paths this SSH user owns. Directories created by a
+  # different NAS user fail with "Operation not permitted" even when they
+  # already carry the mode we want -- and under `set -e` that aborted the whole
+  # deploy over a no-op. Only the end state matters, so ignore the failure and
+  # verify the mode instead.
+  chmod -R 777 data output prompts 2>/dev/null || true
+  for d in data output prompts; do
+    mode="$(stat -c '%a' "${d}")"
+    if [ "${mode}" != "777" ]; then
+      echo "  !! ${d} is mode ${mode} (want 777) and $(whoami) cannot chmod it -- it's owned by $(stat -c '%U' "${d}")."
+      echo "     Fix from a NAS shell with rights to it: chmod -R 777 ${TARGET_PATH}/${d}"
+      echo "     Left unfixed, admin-panel saves fail with [Errno 13] Permission denied."
+      exit 1
+    fi
+  done
+  echo "  -> data/output/prompts are writable"
+REMOTE
+  done
+}
+
+# ---------------------------------------------------------------------------
+# render / apply
+#
+# container-station-app.yaml is pasted by hand into Container Station's UI (see
+# its own header comment) -- there is no CLI step to inject real values into it
+# the way .deploy.env feeds this script. So it ships with placeholder IPs, and
+# this renders the real ones from .deploy.env into a throwaway copy to paste
+# from instead.
+# ---------------------------------------------------------------------------
+do_render() {
+  local exprs=() inst upper ip
+  for inst in $(ls -1 instances 2>/dev/null); do
+    upper="$(echo "$inst" | tr '[:lower:]' '[:upper:]')"
+    eval "ip=\${APP_LAN_IP_${upper}:-}"
+    [ -n "$ip" ] || die "APP_LAN_IP_${upper} is not set in .deploy.env — see deploy.env.example.
+     Without it the rendered compose file would keep a placeholder address and
+     the container would come up unreachable."
+    exprs+=("s#APP_LAN_IP_${upper}_PLACEHOLDER#${ip}#")
+    # Pin the MAC too, derived from that address — see nas_mac_for_ip.
+    exprs+=("s#APP_MAC_${upper}_PLACEHOLDER#$(nas_mac_for_ip "${ip}")#")
+  done
+  [ ${#exprs[@]} -gt 0 ] || die "No instances under instances/ — nothing to render."
+  nas_render "$NAS_COMPOSE" "$RENDERED" "${exprs[@]}"
+}
+
+do_apply() {
+  nas_require_reachable
+  # One project covers every instance, so this is a single `up -d` regardless of
+  # --instance: compose recreates only the services whose definition or image
+  # actually changed, and leaves the rest running.
+  nas_compose_up
+  echo
+  # Verify over the LAN, not just "docker says healthy" — those are different
+  # claims and only this one is the user's. See nas_wait_reachable.
+  local failed=0
+  for inst in ${INSTANCES}; do
+    local upper ip
+    upper="$(echo "$inst" | tr '[:lower:]' '[:upper:]')"
+    eval "ip=\${APP_LAN_IP_${upper}:-}"
+    [ -n "$ip" ] || continue
+    nas_wait_reachable "${inst}" "http://${ip}:8080" "/status" || failed=1
+  done
+  [ "$failed" = 0 ] || die "Deployed, but not reachable over the LAN — see above."
+}
+
+do_check() {
+  nas_require_reachable
+  local inst upper ip
+  for inst in ${INSTANCES}; do
+    upper="$(echo "$inst" | tr '[:lower:]' '[:upper:]')"
+    eval "ip=\${APP_LAN_IP_${upper}:-}"
+    if [ -z "$ip" ]; then
+      echo "? ${inst}: APP_LAN_IP_${upper} not set — nothing to probe"
+      continue
+    fi
+    nas_probe "${inst}" "http://${ip}:8080" "/status" || true
+  done
+  echo "  (Probing from the NAS itself would fail regardless — a host cannot reach"
+  echo "   its own macvlan children. Run this from the Mac, on the LAN or VPN.)"
+}
+
+do_ship() {
+  nas_require_reachable
+  echo "==> Deploying to ${NAS_SSH}: $(echo ${INSTANCES} | tr ' ' ',') (build on ${BUILD_ON})"
+  reconcile_instances
+  build_image
+  sync_instances
+
+  # The compose definition goes up with everything else, so what runs on the NAS
+  # is always what this repo says. Under Container Station this was a manual
+  # re-paste that was silently skippable.
+  echo "==> shipping the compose definition"
+  do_render
+  nas_put "$RENDERED" "${NAS_APP_DIR}/docker-compose.yml"
+}
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: ./deploy [verb] [--instance NAME]... [--build-on mac|nas] [--no-apply]
+
+  (none)    ship, then apply — the everyday deploy
+  ship      reconcile, build, ship the image, sync config and the compose file
+  apply     docker compose up -d on the NAS
+  render    write deploy-out/docker-compose.nas.yml with the real IPs and stop
+  check     probe each instance's /status on its qnet address
+
+  --instance NAME   just this instance (repeatable). Default: all of instances/.
+  --build-on mac    cross-compile linux/amd64 here and stream the image over (default)
+  --build-on nas    push the build context and run docker build on the NAS instead
+  --no-apply        stop after ship
+
+Real values live in the git-ignored .deploy.env — see deploy.env.example.
+USAGE
+  exit 1
+}
+
+case "${VERB:-up}" in
+  ship)   resolve_instances; do_ship ;;
+  apply)  resolve_instances; do_apply ;;
+  render) do_render ;;
+  check)  resolve_instances; do_check ;;
+  up)     resolve_instances; do_ship
+          if $NO_APPLY; then
+            echo; echo "--no-apply: shipped, nothing restarted. Run ./deploy apply when ready."
+          else
+            echo; do_apply
+          fi ;;
+  help|-h|--help) usage ;;
+  *) echo "✗ Unknown verb: ${VERB}" >&2; usage ;;
+esac
