@@ -79,6 +79,11 @@
     .cell-ok { color: var(--text); }
     .cell-drop { color: #fcd34d; }
     .routing-summary { margin-bottom: 12px; font-size: 0.85rem; color: var(--text-muted); }
+    /* The collapsed form: one line per column, which is the whole content of a
+       grid whose rows are all the same. */
+    .routing-map { list-style: none; margin: 0 0 12px; padding: 0; font-size: 0.85rem; }
+    .routing-map li { padding: 4px 0; color: var(--text); }
+    .routing-from { display: inline-block; min-width: 9rem; color: var(--text-muted); }
     .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
     .btn-ghost:hover { color: var(--error); border-color: rgba(248, 113, 113, 0.5); }
     .feed-head { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -168,7 +173,7 @@
 
     <div class="card" id="routingCard" style="display:none">
       <h2>Routing table</h2>
-      <p>Delivery needs <strong>every</strong> filter to match, so what matters is the combination. A cell shows which digest would take an item from that feed with that <span id="routingAxisWord">value</span> — <span class="cell-drop">nowhere</span> means such an item is summarised at full cost and then discarded. Updates automatically when you save sources.</p>
+      <p>Where an item ends up, given the feed it came from and its <span id="routingAxisWord">value</span>. Delivery needs <strong>every</strong> filter to match, so what matters is the combination — a combination reaching <span class="cell-drop">nowhere</span> is summarised at full cost and then discarded. While no feed is barred from anywhere the answer is the same for every feed, so it is shown once; bar a feed in <strong>Digests</strong> above and the per-feed grid appears. Updates automatically when you save sources.</p>
       <div id="routingWrap" style="overflow-x:auto"></div>
       <div id="routingMsg" class="msg" style="display:none;margin-top:12px"></div>
     </div>
@@ -681,22 +686,52 @@
 
         wrap.innerHTML = '';
 
-        const summary = document.createElement('div');
-        summary.className = 'routing-summary';
+        const axisWordText = data.axis === 'domain' ? 'subject area' : 'category';
+        const axisWord = document.getElementById('routingAxisWord');
+        if (axisWord) axisWord.textContent = axisWordText;
+
+        const cellsOf = row => cats.map(c => (row.cells || {})[c] || []);
         const drops = (data.unroutable || []).length;
         const orphans = (data.orphan_feeds || []).length;
-        summary.textContent = drops === 0
-          ? 'Every feed and category combination reaches a digest.'
-          : drops + ' of ' + (feeds.length * cats.length) + ' combinations reach no digest'
-            + (orphans ? ', including ' + orphans + ' feed(s) delivered nowhere at all' : '') + '.';
+        // Every feed routing identically is the healthy default, not a finding:
+        // a feed reaches every digest unless someone bars it, and the subject
+        // area does the choosing. Printing that one row once per feed was twenty
+        // rows saying one thing. So say it once -- and let the grid back out the
+        // moment a feed actually differs, which is exactly when the per-feed
+        // detail becomes the point.
+        const uniform = drops === 0
+          && new Set(feeds.map(r => JSON.stringify(cellsOf(r)))).size === 1;
+
+        const summary = document.createElement('div');
+        summary.className = 'routing-summary';
+        summary.textContent = drops > 0
+          ? drops + ' of ' + (feeds.length * cats.length) + ' combinations reach no digest'
+            + (orphans ? ', including ' + orphans + ' feed(s) delivered nowhere at all' : '') + '.'
+          : uniform
+            ? 'No feed is barred from anywhere, so the ' + axisWordText
+              + ' alone decides the digest \u2014 identically for all ' + feeds.length + ' feeds:'
+            : 'Every feed and ' + axisWordText + ' combination reaches a digest.';
         wrap.appendChild(summary);
+
+        if (uniform) {
+          const map = document.createElement('ul');
+          map.className = 'routing-map';
+          cats.forEach((c, i) => {
+            const li = document.createElement('li');
+            const from = document.createElement('span');
+            from.className = 'routing-from';
+            from.textContent = c;
+            li.appendChild(from);
+            li.appendChild(document.createTextNode(' \u2192 ' + cellsOf(feeds[0])[i].join(', ')));
+            map.appendChild(li);
+          });
+          wrap.appendChild(map);
+        }
 
         const table = document.createElement('table');
         table.className = 'routing-table';
         const thead = document.createElement('thead');
         const hrow = document.createElement('tr');
-        const axisWord = document.getElementById('routingAxisWord');
-        if (axisWord) axisWord.textContent = data.axis === 'domain' ? 'subject area' : 'category';
         const corner = document.createElement('th');
         corner.textContent = 'Feed';
         hrow.appendChild(corner);
@@ -715,9 +750,8 @@
           name.className = 'feed-name';
           name.textContent = row.feed;
           tr.appendChild(name);
-          cats.forEach(c => {
+          cellsOf(row).forEach(titles => {
             const td = document.createElement('td');
-            const titles = (row.cells || {})[c] || [];
             if (titles.length === 0) {
               td.className = 'cell-drop';
               td.textContent = 'nowhere';
@@ -730,7 +764,20 @@
           tbody.appendChild(tr);
         });
         table.appendChild(tbody);
-        wrap.appendChild(table);
+
+        if (uniform) {
+          // Built either way, one click away when it is uniform: "which feeds
+          // does that cover?" is a fair question and the answer is the names.
+          const details = document.createElement('details');
+          const toggle = document.createElement('summary');
+          toggle.className = 'digest-summary';
+          toggle.textContent = 'Show all ' + feeds.length + ' feeds';
+          details.appendChild(toggle);
+          details.appendChild(table);
+          wrap.appendChild(details);
+        } else {
+          wrap.appendChild(table);
+        }
         card.style.display = 'block';
       } catch (e) {
         card.style.display = 'none';
