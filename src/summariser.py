@@ -21,6 +21,7 @@ from src.retry import retry
 from src.usage import extract_usage
 from src.usage import record as record_usage
 from src.utils import PROJECT_ROOT, render_template
+from src.vault.text import MAX_ENTITY_CHARS, canonical
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +103,52 @@ def fallback_domain(config: dict[str, Any]) -> str | None:
     return allowed[0]
 
 
+#: Cap on entities kept per story. A model asked for "the things this is about"
+#: will occasionally return twenty, most of them incidental; a story that is
+#: genuinely about eight named things is already unusual.
+MAX_ENTITIES_PER_ITEM = 8
+
+
+def extract_entities(config: dict[str, Any]) -> bool:
+    """Whether to ask the model for the named things each story is about.
+
+    Off by default, and the field is left off the schema entirely when it is --
+    an instance with no vault to project into should not pay output tokens for a
+    list nothing reads."""
+    return bool((config.get("llm") or {}).get("extract_entities"))
+
+
+def _coerce_entities(value: Any, config: dict[str, Any]) -> dict[str, list[str]]:
+    """{"entities": [...]} for merging into a result, or {} where this instance
+    doesn't extract them.
+
+    Same defensive reasoning as _coerce_category: the schema is not always
+    enforced (see _unwrap_list), so this may be handed a string, a list of dicts,
+    or a sentence. Anything unusable becomes an empty list rather than an
+    exception, because entities are a bonus on top of the digest and must never
+    cost an item its delivery."""
+    if not extract_entities(config):
+        return {}
+    if not isinstance(value, list):
+        return {"entities": []}
+    kept: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        surface = " ".join(entry.split()).strip(" .,;:")
+        if not surface or len(surface) > MAX_ENTITY_CHARS:
+            continue
+        key = canonical(surface)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(surface)
+        if len(kept) >= MAX_ENTITIES_PER_ITEM:
+            break
+    return {"entities": kept}
+
+
 def prompt_vocabulary_drift(config: dict[str, Any]) -> list[str]:
     """Configured category/domain values that no summarise prompt mentions.
 
@@ -137,10 +184,56 @@ def prompt_vocabulary_drift(config: dict[str, Any]) -> list[str]:
                     f"{label} never mentions {field} value(s) {', '.join(sorted(missing))} -- "
                     f"the API will reject anything else, so those values can never be assigned"
                 )
+        # Same class of silent misconfiguration, one level up: the schema will
+        # happily accept an empty list, so a prompt that never asks for entities
+        # produces a vault whose topic notes are simply never created, with no
+        # error anywhere to say why.
+        if extract_entities(config) and not re.search(r"\bentit(y|ies)\b", text, re.IGNORECASE):
+            messages.append(
+                f"{label} never mentions entities, but llm.extract_entities is on -- "
+                f"the schema accepts an empty list, so no topic notes would ever be written"
+            )
     return messages
 
 
-def _result_schema(*, array: bool, allowed: list[str], allowed_domains: list[str] | None = None) -> dict[str, Any]:
+# How items are grouped before the clustering call. "source" clusters each feed
+# on its own; "all" clusters every feed together. See _cluster_groups.
+CLUSTER_SCOPE_SOURCE = "source"
+CLUSTER_SCOPE_ALL = "all"
+
+
+def cluster_scope(config: dict[str, Any]) -> str:
+    scope = str(config.get("llm", {}).get("cluster_scope", CLUSTER_SCOPE_SOURCE)).strip().lower()
+    if scope not in (CLUSTER_SCOPE_SOURCE, CLUSTER_SCOPE_ALL):
+        log.warning("Unknown llm.cluster_scope %r, clustering per source", scope)
+        return CLUSTER_SCOPE_SOURCE
+    return scope
+
+
+def cluster_chars(config: dict[str, Any]) -> int | None:
+    """Description budget for the grouping call, or None for a single pass.
+
+    Setting it splits clustering in two: the grouping call sees a trimmed copy
+    of each item and decides only which of them are the same story, then the
+    merged stories are summarised from the FULL text. That is not an
+    optimisation -- summarising from the trimmed copy would be a quality
+    regression on an instance whose max_description_chars is deliberately
+    large, so trimming the input and re-summarising go together."""
+    raw = config.get("llm", {}).get("cluster_chars")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        log.warning("llm.cluster_chars %r is not a number, clustering in one pass", raw)
+        return None
+    return value if value > 0 else None
+
+
+def _result_schema(
+    *, array: bool, allowed: list[str], allowed_domains: list[str] | None = None,
+    with_entities: bool = False,
+) -> dict[str, Any]:
     """JSON schema for a single {summary, category[, domain]} result, or
     (array=True) an object wrapping an array of them for the batch call.
     Top-level type must be "object" for both providers' structured-output
@@ -157,6 +250,11 @@ def _result_schema(*, array: bool, allowed: list[str], allowed_domains: list[str
     if allowed_domains:
         properties["domain"] = {"type": "string", "enum": allowed_domains}
         required.append("domain")
+    if with_entities:
+        # No enum: this vocabulary is open by nature -- the whole value of it is
+        # naming a CVE or a vendor nobody listed in advance.
+        properties["entities"] = {"type": "array", "items": {"type": "string"}}
+        required.append("entities")
 
     item_schema = {
         "type": "object",
@@ -379,7 +477,10 @@ def _topic_line(item: dict[str, Any]) -> str:
     return line
 
 
-def _cluster_schema(allowed: list[str], allowed_domains: list[str] | None = None) -> dict[str, Any]:
+def _cluster_schema(
+    allowed: list[str], allowed_domains: list[str] | None = None,
+    with_entities: bool = False,
+) -> dict[str, Any]:
     """Schema for the clustering call: groups of item indices, each with one
     headline, summary and category.
 
@@ -396,6 +497,9 @@ def _cluster_schema(allowed: list[str], allowed_domains: list[str] | None = None
     if allowed_domains:
         properties["domain"] = {"type": "string", "enum": allowed_domains}
         required.append("domain")
+    if with_entities:
+        properties["entities"] = {"type": "array", "items": {"type": "string"}}
+        required.append("entities")
 
     return {
         "type": "object",
@@ -415,9 +519,55 @@ def _cluster_schema(allowed: list[str], allowed_domains: list[str] | None = None
     }
 
 
+def _group_schema() -> dict[str, Any]:
+    """Schema for the grouping half of a two-pass cluster: which items are the
+    same story, and nothing else.
+
+    Deliberately not _cluster_schema: a headline and a summary per cluster would
+    be written and then thrown away by the summarising pass, and output tokens
+    are the expensive half of the call."""
+    return {
+        "type": "object",
+        "properties": {
+            "clusters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"members": {"type": "array", "items": {"type": "integer"}}},
+                    "required": ["members"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["clusters"],
+        "additionalProperties": False,
+    }
+
+
+def _combined_description(
+    members_items: list[dict[str, Any]], max_chars: int
+) -> str:
+    """The members' article text, pooled, for summarising a merged story.
+
+    Each outlet carries detail the others left out -- the figure in one, the
+    attribution in another. Summarising only the first report would discard the
+    rest, which is most of the reason for merging them in the first place."""
+    parts: list[str] = []
+    budget = max_chars
+    for item in members_items:
+        text = (item.get("description") or "").strip()
+        if not text or budget <= 0:
+            continue
+        publisher = item.get("publisher") or item.get("source", "")
+        chunk = f"[{publisher}] {text}" if publisher else text
+        parts.append(chunk[:budget])
+        budget -= len(parts[-1])
+    return "\n\n".join(parts)
+
+
 def _merge_cluster(
     items: list[dict[str, Any]], members: list[int], result: dict[str, Any],
-    config: dict[str, Any],
+    config: dict[str, Any], pool_descriptions: int | None = None,
 ) -> dict[str, Any]:
     """Build one digest item from the source items a cluster merged.
 
@@ -439,29 +589,43 @@ def _merge_cluster(
         })
 
     primary = members_items[0]
-    return {
+    merged = {
         **primary,
         "title": result.get("title") or primary.get("title", ""),
         "summary": result.get("summary") or (primary.get("description", "") or "")[:300],
         "category": _coerce_category(result.get("category"), config),
         **_coerce_domain(result.get("domain"), config),
+        # Empty on the two-pass path, where this call only groups -- the
+        # summarising pass that follows fills them in from the full text.
+        **_coerce_entities(result.get("entities"), config),
         # link stays the primary one so history and any single-link consumer
         # keeps working unchanged.
         "link": links[0]["link"] if links else primary.get("link", ""),
         "links": links,
         "published": max((i.get("published") or "") for i in members_items),
     }
+    if pool_descriptions and len(members_items) > 1:
+        merged["description"] = _combined_description(members_items, pool_descriptions)
+    return merged
 
 
 def _assign_clusters(
-    items: list[dict[str, Any]], clusters: list[dict[str, Any]], config: dict[str, Any]
+    items: list[dict[str, Any]], clusters: list[dict[str, Any]], config: dict[str, Any],
+    pool_descriptions: int | None = None, singletons_implicit: bool = False,
 ) -> list[dict[str, Any]]:
     """Turn the model's clusters into digest items, defensively.
 
     The schema constrains the shape but not the arithmetic: indices can repeat,
     fall out of range, or omit an item entirely. An item silently dropped here is
     news the reader never sees, so anything unclaimed becomes its own single-item
-    cluster rather than disappearing."""
+    cluster rather than disappearing.
+
+    singletons_implicit says an unclaimed item is expected rather than a fault.
+    The grouping pass asks only for groups of two or more -- listing forty
+    single-member groups is output tokens spent to say nothing, and it makes a
+    genuinely dropped item indistinguishable from a story only one outlet
+    covered. With them implicit the rescue below IS the contract, so it stops
+    being worth a warning."""
     claimed: set[int] = set()
     output: list[dict[str, Any]] = []
 
@@ -475,17 +639,21 @@ def _assign_clusters(
         if not members:
             continue
         claimed.update(members)
-        output.append(_merge_cluster(items, members, cluster, config))
+        output.append(_merge_cluster(items, members, cluster, config, pool_descriptions))
 
     unclaimed = [i for i in range(len(items)) if i not in claimed]
     if unclaimed:
-        log.warning("Clustering left %d item(s) unassigned; keeping them separate", len(unclaimed))
+        if singletons_implicit:
+            log.info("%d item(s) stand alone", len(unclaimed))
+        else:
+            log.warning("Clustering left %d item(s) unassigned; keeping them separate",
+                        len(unclaimed))
         for i in unclaimed:
             output.append(_merge_cluster(items, [i], {
                 "title": items[i].get("title", ""),
                 "summary": (items[i].get("description", "") or "")[:300],
                 "category": fallback_category(config),
-            }, config))
+            }, config, pool_descriptions))
     return output
 
 
@@ -510,7 +678,8 @@ def cluster_topic(
 
     content = _call_llm(
         client, config, prompt,
-        _cluster_schema(categories(config), domains(config)), kind="cluster"
+        _cluster_schema(categories(config), domains(config),
+                        with_entities=extract_entities(config)), kind="cluster"
     )
     clusters = _unwrap_list(content, "clusters")
     if clusters is None:
@@ -596,7 +765,8 @@ def summarise_batch(
     content = _call_llm(
         client, config, prompt,
         _result_schema(array=True, allowed=categories(config),
-                       allowed_domains=domains(config)), kind="batch"
+                       allowed_domains=domains(config),
+                       with_entities=extract_entities(config)), kind="batch"
     )
     results = _parse_batch_response(content)
 
@@ -612,6 +782,7 @@ def summarise_batch(
                 "summary": r["summary"],
                 "category": _coerce_category(r.get("category"), config),
                 **_coerce_domain(r.get("domain"), config),
+                **_coerce_entities(r.get("entities"), config),
             })
         else:
             log.warning("Missing result for item %d: %s", i + 1, item.get("title", "")[:50])
@@ -620,6 +791,7 @@ def summarise_batch(
                 "summary": (item.get("description", "") or "")[:300],
                 "category": fallback_category(config),
                 **_coerce_domain(None, config),
+                **_coerce_entities(None, config),
             })
     return output
 
@@ -643,48 +815,149 @@ def summarise_item(
         content = _call_llm(
             client, config, prompt,
             _result_schema(array=False, allowed=categories(config),
-                           allowed_domains=domains(config)), kind="item"
+                           allowed_domains=domains(config),
+                           with_entities=extract_entities(config)), kind="item"
         )
         data = json.loads(content)
         summary = data["summary"]
         category = _coerce_category(data.get("category"), config)
         domain = _coerce_domain(data.get("domain"), config)
+        entities = _coerce_entities(data.get("entities"), config)
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         log.warning("Failed to parse LLM output for '%s': %s", item.get("title"), e)
         summary = item.get("description", "")[:300]
         category = fallback_category(config)
         domain = _coerce_domain(None, config)
+        entities = _coerce_entities(None, config)
 
     return {
         **item,
         "summary": summary,
         "category": category,
         **domain,
+        **entities,
     }
+
+
+def _cluster_groups(
+    items: list[dict[str, Any]], config: dict[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """The sets of items each clustering call is allowed to merge within.
+
+    Per SOURCE by default, and on a topic instance that is a correctness
+    requirement rather than a convenience: `source` is the tracked topic, which
+    is what digests route on, so merging two topics' items into one story would
+    deliver it to whichever recipient the surviving item happened to belong to
+    and silently deny it to the other.
+
+    On a publisher instance the same rule makes clustering useless. There
+    `source` is the outlet, and the duplicates worth merging are precisely the
+    ones that span outlets -- one advisory written up by Krebs, Bleeping
+    Computer and The Hacker News lands in three different groups and never
+    meets itself. Such an instance sets cluster_scope: all, which is safe only
+    while every feed reaches the same digests; routing.warn_on_cross_feed_
+    clustering checks that and says so when it stops being true."""
+    if cluster_scope(config) == CLUSTER_SCOPE_ALL:
+        return {"all feeds": list(items)}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        groups.setdefault(str(item.get("source", "")), []).append(item)
+    return groups
+
+
+def _trimmed_for_grouping(
+    items: list[dict[str, Any]], max_chars: int
+) -> list[dict[str, Any]]:
+    """Copies with the article text cut down for the grouping call.
+
+    Deciding whether two reports are the same story needs the headline and the
+    opening -- who, what, which product. The rest is detail that only matters
+    once something is being summarised, and carrying it here would put an
+    instance's whole day of full-text articles into one prompt."""
+    return [{**item, "description": (item.get("description") or "")[:max_chars]} for item in items]
+
+
+def group_stories(
+    items: list[dict[str, Any]], client: Any, config: dict[str, Any], max_chars: int
+) -> list[dict[str, Any]]:
+    """First half of a two-pass cluster: merge the same story, summarise nothing.
+
+    Returns merged items still carrying their source text, for summarise_batch
+    to write up from the full article rather than from the trimmed copy this
+    call was shown."""
+    trimmed = _trimmed_for_grouping(items, max_chars)
+    items_text = "\n".join(_format_item_for_cluster(item, i) for i, item in enumerate(trimmed))
+    prompt = render_template(CLUSTER_PROMPT_PATH, items=items_text)
+
+    content = _call_llm(client, config, prompt, _group_schema(), kind="cluster")
+    clusters = _unwrap_list(content, "clusters")
+    if clusters is None:
+        raise ValueError("clustering returned no usable groups")
+
+    merged = _assign_clusters(
+        items, clusters, config,
+        pool_descriptions=int(config.get("sources", {}).get("max_description_chars", 1000)),
+        singletons_implicit=True,
+    )
+    if len(merged) < len(items):
+        log.info("Merged %d items into %d stories", len(items), len(merged))
+    return merged
+
+
+def _summarise_in_batches(
+    items: list[dict[str, Any]], client: Any, config: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Summarise in batches, falling back to per-item when a batch won't parse."""
+    batch_size = int(config.get("llm", {}).get("batch_size", 8))
+    result: list[dict[str, Any]] = []
+    for start in range(0, len(items), batch_size):
+        batch = items[start : start + batch_size]
+        log.info("Summarising batch %d-%d/%d (%d items)",
+                 start + 1, start + len(batch), len(items), len(batch))
+        try:
+            batch_result = summarise_batch(batch, client, config)
+            if len(batch_result) == len(batch):
+                result.extend(batch_result)
+            else:
+                for item in batch:
+                    result.append(summarise_item(item, client, config))
+        except Exception as e:
+            log.warning("Batch summarisation failed, falling back to per-item: %s", e)
+            for item in batch:
+                result.append(summarise_item(item, client, config))
+    return result
 
 
 def _cluster_all(
     items: list[dict[str, Any]], client: Any, config: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Cluster and summarise, one LLM call per topic.
-
-    Grouped by source rather than clustering everything together, and that is a
-    correctness requirement rather than a convenience: `source` is what digests
-    route on, so merging two topics' items into one story would deliver it to
-    whichever recipient the surviving item happened to belong to, and silently
-    deny it to the other."""
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for item in items:
-        groups.setdefault(str(item.get("source", "")), []).append(item)
+    """Cluster and summarise. One LLM call per group, plus a summarising pass
+    when llm.cluster_chars splits the work in two."""
+    max_chars = cluster_chars(config)
+    groups = _cluster_groups(items, config)
 
     result: list[dict[str, Any]] = []
-    for source, group in groups.items():
-        log.info("Clustering %d item(s) for '%s'", len(group), source)
+    for key, group in groups.items():
+        log.info("Clustering %d item(s) for '%s'", len(group), key)
         try:
-            result.extend(cluster_topic(group, client, config))
+            if max_chars:
+                result.extend(group_stories(group, client, config, max_chars))
+            else:
+                result.extend(cluster_topic(group, client, config))
         except Exception as e:
-            log.warning("Clustering failed for '%s', falling back to per-item: %s", source, e)
-            result.extend(summarise_batch(group, client, config))
+            if max_chars:
+                # The summarising pass still runs, so the day's items are all
+                # delivered -- unmerged, which reads as duplicates rather than
+                # as the silence a re-raise would produce.
+                log.warning("Grouping failed for '%s', leaving its items unmerged: %s", key, e)
+                result.extend(group)
+            else:
+                log.warning("Clustering failed for '%s', falling back to per-item: %s", key, e)
+                result.extend(summarise_batch(group, client, config))
+
+    if max_chars:
+        log.info("Summarising %d story/stories from the full article text", len(result))
+        result = _summarise_in_batches(result, client, config)
     return result
 
 
@@ -697,30 +970,11 @@ def summarise_all(
 
     client = _get_client(config)
     llm_cfg = config.get("llm", {})
-    batch_size = int(llm_cfg.get("batch_size", 8))
 
     if llm_cfg.get("cluster", False):
         return _cluster_all(items, client, config)
 
-    result = []
-    for start in range(0, len(items), batch_size):
-        batch = items[start : start + batch_size]
-        log.info("Summarising batch %d-%d/%d (%d items)", start + 1, start + len(batch), len(items), len(batch))
-
-        try:
-            batch_result = summarise_batch(batch, client, config)
-            if len(batch_result) == len(batch):
-                result.extend(batch_result)
-            else:
-                # Fallback to per-item
-                for item in batch:
-                    result.append(summarise_item(item, client, config))
-        except Exception as e:
-            log.warning("Batch summarisation failed, falling back to per-item: %s", e)
-            for item in batch:
-                result.append(summarise_item(item, client, config))
-
-    return result
+    return _summarise_in_batches(items, client, config)
 
 
 if __name__ == "__main__":

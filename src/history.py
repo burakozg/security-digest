@@ -166,6 +166,33 @@ def _filters(digest_slug: str | None, query: str | None) -> tuple[str, list[Any]
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
+def iter_all(
+    since: str | None = None,
+    db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """Every recorded entry, OLDEST first, optionally from `since` (YYYY-MM-DD).
+
+    Oldest-first because the one consumer -- the vault backfill -- rebuilds a
+    corpus in the order it happened: a topic's note is written the run its second
+    mention arrives, and walking backwards would mean writing every note twice.
+    Not paginated: this is a one-off pass over a table capped at
+    history.max_entries, and `load_entries` remains the paginated reader for the
+    web UI.
+    """
+    where, params = ("", [])
+    if since:
+        where, params = " WHERE sent_at >= ?", [since]
+    conn = get_connection(db_path)
+    try:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            f"SELECT {_COLUMNS} FROM history{where} ORDER BY id ASC", params
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
 def load_entries(
     config: dict[str, Any] | None = None,
     limit: int = 200,

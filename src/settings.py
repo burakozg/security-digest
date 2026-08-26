@@ -144,10 +144,27 @@ class LLMConfig(_Lenient):
     # to both, as two emails.
     domains: list[str] | None = None
     fallback_domain: str | None = None
+    # Ask the model to name the things each story is actually about -- CVEs,
+    # vendors, threat actors, named victims. Neither a category nor a domain:
+    # those are beats, and a beat is not what a topic note is about. Off by
+    # default, and left off the response schema entirely when off, so an
+    # instance with no vault pays nothing for it. Read by src/vault/.
+    extract_entities: bool = False
     # Merge items reporting the same event into one digest entry with several
     # source links, instead of summarising each item separately. Off by default:
     # it changes the shape of the pipeline's output (N items in, fewer out).
     cluster: bool = False
+    # What one clustering call is allowed to merge within: "source" (each feed
+    # on its own) or "all" (every feed together). A topic instance must stay on
+    # "source" -- the topic IS the routing key. A publisher instance needs "all",
+    # because the duplicates worth merging are the ones that span outlets. See
+    # summariser._cluster_groups and routing.warn_on_cross_feed_clustering.
+    cluster_scope: str = "source"
+    # Article-text budget for the grouping call. Setting it splits clustering in
+    # two: group on the trimmed copy, then summarise the merged stories from the
+    # full text. Needed where max_description_chars is large -- otherwise the
+    # summary would be written from the trimmed copy, a real quality loss.
+    cluster_chars: int | None = None
     fallback_category: str | None = None
 
 
@@ -221,6 +238,48 @@ class DeliveryConfig(_Lenient):
     email: EmailConfig | None = None
 
 
+class VaultConfig(_Lenient):
+    """Projecting delivered digests into an Obsidian vault over LiveSync.
+
+    Deployment topology, and therefore deliberately NOT admin-panel-overridable
+    -- there is no data/vault_overrides.yaml and src/reconcile.py knows nothing
+    about this block. Which database receives your notes is not a setting to
+    fat-finger in a browser.
+
+    Two LiveSync client settings this depends on, both of which silently break
+    the projection if turned on: end-to-end encryption, because we write
+    plaintext chunks, and path obfuscation, because entries are keyed by path.
+    """
+
+    enabled: bool = False
+    # The CouchDB the *vault* replicates against, which is not this app's own
+    # database. None by default: the real address is deployment detail and
+    # belongs in the environment (VAULT_COUCHDB_URL), never in this git-tracked
+    # file, which a deploy pushes over the target's copy.
+    couchdb_url: str | None = None
+    # None, not a default name: the vault database is whichever one your LiveSync
+    # clients replicate against, and guessing means a 404 at best and writing
+    # notes into another application's database at worst. src/vault/ refuses to
+    # build a client without one. Normally supplied as VAULT_DB in .env.
+    db: str | None = None
+    user: str = "security_digest"
+    # Where projected notes land in the vault. A root folder of its own, so the
+    # folder it would otherwise sit inside keeps a single meaning.
+    folder: str = "12 daily-digest"
+    # Topic notes are filed separately, and this is deliberately the same folder
+    # podcast-digest writes its entity notes to: one thing, one note, whichever
+    # corpus noticed it. See src/vault/notes.py for the sharing contract.
+    topics_folder: str = "99 topics"
+    # Mentions before a thing is worth a note of its own. One mention is a detail
+    # in a story, not a thread through the corpus, and a vault with four thousand
+    # single-use CVE notes is a worse graph than none.
+    min_mentions: int = 2
+    max_mentions: int = 20000
+    timeout_s: float = 30.0
+    # Which digests project. Empty means every digest this instance sends.
+    digests: list[str] = []
+
+
 class Settings(_Lenient):
     """Top-level validated config, mirroring config.yaml's merged shape
     (base file + sources/schedule/llm overrides, as already merged by
@@ -239,6 +298,7 @@ class Settings(_Lenient):
     web: WebConfig = WebConfig()
     history: HistoryConfig = HistoryConfig()
     delivery: DeliveryConfig = DeliveryConfig()
+    vault: VaultConfig = VaultConfig()
 
 
 # Wiring warnings already emitted this process -- see warn_on_unwired_sources.

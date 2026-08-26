@@ -33,6 +33,24 @@ llm:
   - ai_security
   - ai_ml
   fallback_domain: security
+  # Name the things each story is about, for the vault's topic notes. Neither a
+  # category nor a domain: those are beats ("news", "security"), and a beat is
+  # not what a second brain is organised around. See src/vault/.
+  extract_entities: true
+  # Merge the same story reported by several outlets into one entry crediting
+  # each of them, instead of three near-identical entries.
+  cluster: true
+  # Across feeds, not per feed. Here `source` is the publisher, so the
+  # duplicates worth merging are precisely the ones that span publishers -- one
+  # advisory in Krebs, Bleeping Computer and The Hacker News. Safe because every
+  # feed below reaches all three digests, so the surviving item's feed name
+  # cannot change where the merged story is delivered; load_config warns if that
+  # stops being true. (A topic instance must NOT set this -- see src/settings.py.)
+  cluster_scope: all
+  # Group on the first 800 characters, then summarise the merged stories from
+  # the full max_description_chars. Deciding "same story?" needs the headline
+  # and the opening; writing the summary needs the article.
+  cluster_chars: 800
 # `sources:` is deliberately absent -- each feed names its digests in
 # sources.yaml and the lists are derived from that (see src/routing.py). Adding
 # an explicit sources: back here overrides the feeds and warns at load time.
@@ -71,3 +89,40 @@ delivery:
     # Addresses live in .env (DIGEST_EMAIL_FROM / DIGEST_EMAIL_TO), not here:
     # this file is committed and is pushed over the target's copy on every
     # deploy, so an address written here is both published and overwritten.
+
+# Project each delivered digest into the Obsidian vault, over Self-hosted
+# LiveSync's own CouchDB document format (src/vault/). One note per story, a
+# dated index note, and a contribution to a shared topic note for every named
+# thing the corpus has now seen twice.
+#
+# The address and password are NOT here. This file is git-tracked and a deploy
+# pushes it over the target's copy, so a real address written here would be both
+# published and overwritten -- put VAULT_COUCHDB_URL and VAULT_COUCHDB_PASSWORD
+# in .env, which is neither committed nor deployed.
+#
+# Not admin-panel-overridable, deliberately: which database receives your notes
+# is deployment topology, not a setting to fat-finger in a browser.
+# EVERY key here can be given in .env instead, and .env wins -- VAULT_ENABLED,
+# VAULT_COUCHDB_URL, VAULT_DB, VAULT_USER, VAULT_FOLDER, VAULT_TOPICS_FOLDER
+# (plus VAULT_COUCHDB_PASSWORD, which exists only there). The deployed instance
+# sets them, so the values below are the local-development fallback.
+vault:
+  enabled: true
+  couchdb_url: null
+  # No default in code: the vault database is whichever one your LiveSync
+  # clients replicate against, and guessing a name means either a 404 or --
+  # worse -- writing notes into another application's database. It is NOT
+  # necessarily a database of its own; a vault commonly shares one with the app
+  # that set the CouchDB up.
+  db: null
+  user: security_digest
+  folder: 12 daily-digest
+  # The same folder podcast-digest writes its entity notes to. That is the point:
+  # one thing, one note, whichever corpus noticed it. src/vault/notes.py is the
+  # contract that lets two applications share a file.
+  topics_folder: 99 topics
+  min_mentions: 2
+  max_mentions: 20000
+  timeout_s: 30
+  # Empty: every digest this instance sends.
+  digests: []

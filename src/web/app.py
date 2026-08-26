@@ -27,6 +27,7 @@ from src.routing import accepts_feed, routing_matrix
 from src.summariser import categories, domains, prompt_vocabulary_drift
 from src.status import get as get_status
 from src.usage import daily as daily_usage
+from src.vault import VaultUnavailable, resync as vault_resync
 from src.utils import PROJECT_ROOT, slug
 
 log = logging.getLogger(__name__)
@@ -758,6 +759,35 @@ def admin_flush():
         return {"ok": True, "message": "Seen store cleared"}
     except (OSError, sqlite3.Error) as e:
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
+
+
+@app.post("/admin/vault/resync", dependencies=[admin_auth])
+def admin_vault_resync(body: dict = Body(default={})):
+    """Re-project every note under output/vault/ into the vault's CouchDB.
+
+    Idempotent -- a note the vault already holds costs one GET and is skipped --
+    so this is safe to press at any time. It is how you catch up after the
+    CouchDB was unreachable during a run (the notes were still written to disk),
+    and how a story whose topic only just earned its note starts resolving.
+
+    `{"prune": true}` additionally removes notes the vault still holds under our
+    own folder that we no longer produce -- what finishes a reorganisation rather
+    than leaving the old copies behind. Opt-in, because it is the only thing here
+    that deletes anything; it never touches the shared topics folder, and refuses
+    outright if nothing is on disk. See src.vault._prune.
+    """
+    prune = bool((body or {}).get("prune"))
+    config = _load_config()
+    if not (config.get("vault") or {}).get("enabled"):
+        return JSONResponse(
+            {"ok": False, "message": "vault.enabled is false for this instance"},
+            status_code=400,
+        )
+    try:
+        result = vault_resync(config, prune=prune)
+    except VaultUnavailable as e:
+        return JSONResponse({"ok": False, "message": str(e)}, status_code=502)
+    return {"ok": True, **result}
 
 
 @app.get("/admin/llm", dependencies=[admin_auth])

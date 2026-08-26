@@ -107,3 +107,54 @@ def test_cadence_defaults_to_daily_on_a_config_that_never_heard_of_it():
     assert settings.users[0].frequency == "daily"
     assert settings.users[0].send_day is None
     assert settings.digests[0].frequency == "daily"
+
+
+class TestVaultConfig:
+    def test_absent_block_defaults_to_off(self):
+        assert validate_config({}).vault.enabled is False
+        assert Settings.model_validate({}).llm.extract_entities is False
+
+    def test_the_shipped_shape_validates(self):
+        """The exact block instances/security/config.yaml ships."""
+        settings = validate_config({
+            "vault": {
+                "enabled": True, "couchdb_url": None, "db": "vault",
+                "user": "security_digest", "folder": "12 daily-digest",
+                "topics_folder": "99 topics", "min_mentions": 2,
+                "max_mentions": 20000, "timeout_s": 30, "digests": [],
+            },
+            "llm": {"extract_entities": True},
+        })
+        assert settings.vault.folder == "12 daily-digest"
+        assert settings.vault.enabled is True
+        assert settings.llm.extract_entities is True
+
+    def test_the_topics_folder_defaults_to_the_shared_one(self):
+        """podcast-digest writes its entity notes to '99 topics' too. Diverging
+        would give one thing two notes and defeat the sharing contract."""
+        assert Settings.model_validate({}).vault.topics_folder == "99 topics"
+
+    def test_a_wrong_type_is_caught(self):
+        with pytest.raises(ValidationError):
+            Settings.model_validate({"vault": {"min_mentions": "two"}})
+
+
+class TestShippedConfigsValidate:
+    """Every config.yaml this repo actually deploys must pass validation.
+
+    Not hypothetical: `vault.db: null` was shipped against a field typed `str`,
+    and the first thing that noticed was uvicorn refusing to start on the NAS.
+    load_config() validates at startup, so a type error here is a container that
+    will not boot -- caught in CI instead by walking the real files.
+    """
+
+    @pytest.mark.parametrize("instance", ["security", "news"])
+    def test_instance_config_validates(self, instance):
+        import pathlib
+
+        import yaml
+
+        path = pathlib.Path(__file__).resolve().parent.parent / "instances" / instance / "config.yaml"
+        if not path.is_file():
+            pytest.skip(f"no config.yaml for {instance}")
+        validate_config(yaml.safe_load(path.read_text()) or {})

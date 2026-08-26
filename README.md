@@ -29,7 +29,7 @@ instances/
 Which instance the code runs against comes from `DIGEST_ROOT`. Locally that's a
 path in the checkout; in Docker it is `/app`, with the instance's files
 bind-mounted flat over it (set in the `Dockerfile`, mounts in
-`docker-compose.yml` / `deploy.sh` / `container-station-app.yaml`).
+`docker-compose.yml` / `deploy` / `container-station-app.yaml`).
 
 ```bash
 DIGEST_ROOT=instances/security .venv/bin/python -m src.main
@@ -76,7 +76,7 @@ All paths below are relative to an instance directory (`instances/<name>/`).
 | `sources.yaml` | RSS feed list (name + URL) |
 | `topics.yaml` | **Seed** topic list for a brand-new instance; the live list is `data/topics.yaml`, written by the admin panel |
 | `schedule.txt` | Daily run time (`enabled`, `hour`, `minute`, `timezone`) -- the only place schedule settings live; do not add a `schedule:` block to `config.yaml`, it would be silently overridden |
-| `.env` | Secrets: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `SMTP_USER`/`SMTP_PASSWORD`, `DIGEST_ADMIN_TOKEN` |
+| `.env` | Secrets: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `SMTP_USER`/`SMTP_PASSWORD`, `DIGEST_ADMIN_TOKEN`, `VAULT_COUCHDB_URL`/`VAULT_COUCHDB_PASSWORD` |
 
 ### Multiple readers in one instance
 
@@ -171,11 +171,37 @@ collapse into a single digest entry that credits and links each of them.
 *Seoul Economic Daily · Tech in Asia · 아시아경제*
 ```
 
-Clustering is per topic, and that is a correctness requirement rather than an
-optimisation — `source` is what digests route on, so merging two topics' items
-would deliver the story to whichever recipient the surviving item belonged to
-and silently deny it to the other. `prompts/cluster.txt` defines what counts as
-the same event; it is the main dial if stories are being over- or under-merged.
+`llm.cluster_scope` decides what one clustering call may merge within.
+
+`source` (the default) clusters each feed on its own, and on a **topic**
+instance that is a correctness requirement rather than an optimisation —
+`source` is the tracked topic, which is what digests route on, so merging two
+topics' items would deliver the story to whichever recipient the surviving item
+belonged to and silently deny it to the other.
+
+`all` clusters every feed together, which is what a **publisher** instance
+needs. There `source` is the outlet, so the duplicates worth merging are
+precisely the ones that span outlets — one advisory in Krebs, Bleeping Computer
+and The Hacker News lands in three groups under the default and never meets
+itself. It is safe only while every feed reaches the same digests, since a
+merged item keeps the first member's `source` and `accepts_feed` decides
+delivery from that one name; `load_config` warns as soon as that stops being
+true, so unticking a digest for one feed in the admin panel cannot quietly
+reintroduce the loss.
+
+`llm.cluster_chars` splits clustering into two passes: the grouping call sees a
+trimmed copy of each item and decides only which are the same story, then the
+merged stories are summarised from the **full** `max_description_chars`, with
+every member's text pooled so the summary reflects what each outlet added.
+Without it a single pass groups and summarises together — right where
+descriptions are short, a real quality loss where they are not. The grouping
+call reports only groups of two or more; anything it omits stands alone.
+
+`prompts/cluster.txt` defines what counts as the same event; it is the main dial
+if stories are being over- or under-merged. The security instance's copy leans
+deliberately conservative — a surviving duplicate is a visible annoyance, while
+two distinct events merged deletes one of them with nothing recording that it
+happened.
 
 ### Where panel-managed lists live
 
@@ -214,7 +240,7 @@ to `prompts/*.txt` in place -- so that directory must be a **read-write**
 bind mount (not `:ro`) in any deployment, or edits vanish the next time the
 container is recreated (they land in the container's ephemeral layer
 instead of anywhere durable). Every deploy path in this repo
-(`docker-compose.yml`, `deploy.sh`, `deploy-native.sh`,
+(`docker-compose.yml`, `deploy`,
 `container-station-app.yaml`) already mounts it that way.
 
 The **RSS sources** card carries a **Status** column showing what the last run
@@ -238,9 +264,115 @@ override that empties the feed list. Saving an empty feed list is refused
 outright unless explicitly confirmed.
 
 An override file always replaces the corresponding base list wholesale while it
-exists, so `deploy.sh` pulls each one down and merges it back into the
+exists, so `./deploy` pulls each one down and merges it back into the
 git-tracked file before pushing (`src/reconcile.py`), then deletes it on the
 target.
+
+### Obsidian vault
+
+The email is the product; the vault is the record. When `vault.enabled` is set,
+every digest that goes out is also written into an Obsidian vault as notes:
+
+| Note | Where | What it holds |
+| --- | --- | --- |
+| one per **story** | `12 daily-digest/<year>/<month>/<date>-<slug>.md` | the summary, every outlet that reported it, the topics it names, and the feed text the fetcher already had |
+| one per **topic** | `99 topics/<slug>.md` | every story in the corpus that named this thing, oldest to newest |
+
+There is deliberately **no per-day index note**. One existed briefly and earned
+nothing: measured against the live vault, all 64 had zero inbound links while
+every one of the 427 story notes had at least one, and their whole content was
+`[[story]]` lines duplicating frontmatter the story notes already carry. The
+digest as an *edition* is what the email and the History page are for.
+
+The mechanism is not a file copy. Obsidian's [Self-hosted LiveSync] replicates a
+vault against a CouchDB database, so writing LiveSync's *own* document format
+into that database materialises the notes on every device that syncs -- nothing
+has to be awake but the server, and no folder has to be mounted anywhere. The
+format is reverse-engineered rather than documented; `src/vault/livesync.py` is a
+port of the same code running in two other projects.
+
+**`99 topics/` is shared.** Another application (`podcast-digest`) writes its own
+entity notes into that folder, and a topic note is divided by *ownership* rather
+than by author: each writer replaces only the region between its own
+`<!-- begin:<owner> -->` markers, and namespaces its frontmatter keys
+(`security_mentions` here, `podcasts_mentions` there). Everything else on the
+page -- another writer's section, and your own prose at the top -- is never
+touched. `src/vault/notes.py` is that contract; read it before changing anything
+in it, because the failure mode is silently eating someone else's work in their
+own vault.
+
+A topic earns a note on its **second** mention (`vault.min_mentions`). One
+mention is a detail in a story, not a thread through the corpus, and security
+feeds name enough one-off CVEs to bury a vault in single-use notes. Below the
+bar, a topic is plain text in the story note; when it later crosses the bar, the
+older stories that named it are relinked so the graph has both edges.
+
+**Deleting a note in Obsidian sticks.** A digest is generated output, so if you
+prune last month's stories the projection leaves them alone and says so in the
+log rather than putting them back.
+
+Stories are filed by month (`2026/08/`) rather than in one flat folder: this
+instance adds ~15 a day, and `podcast-digest` already nests under a year in the
+same vault. Nesting costs nothing, because **Obsidian resolves `[[wikilinks]]` by
+filename, not by path** -- which is also why filenames keep their date prefix,
+and why moving notes between folders breaks no link.
+
+Notes are written to `output/vault/` first and pushed from there, so a CouchDB
+that is unreachable never fails a run -- the notes are on disk and the next run,
+or `POST /admin/vault/resync`, catches up. That endpoint takes
+`{"prune": true}` to also remove notes the vault still holds under
+`12 daily-digest/` that the app no longer produces -- how a reorganisation
+finishes. It never touches `99 topics/`, which is shared, and refuses if nothing
+is on disk.
+
+#### Setting it up
+
+1. Turn it on in `config.yaml` (`vault.enabled`, and `llm.extract_entities`,
+   which is what makes the model name the things each story is about).
+2. Put the address and password in `.env` as `VAULT_COUCHDB_URL` and
+   `VAULT_COUCHDB_PASSWORD` -- not in `config.yaml`, which is committed and is
+   pushed over the target's copy on every deploy.
+3. Give it an account with member access to the vault database. As the CouchDB
+   admin:
+
+   ```bash
+   curl -X PUT "$COUCH/_users/org.couchdb.user:security_digest" \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"security_digest","password":"...","roles":[],"type":"user"}'
+
+   # Add it to the EXISTING member list -- replacing the list would lock your
+   # own LiveSync clients out of their vault.
+   curl "$COUCH/vault/_security"          # read it, add the name, then PUT it back
+   ```
+
+4. In the LiveSync plugin, **end-to-end encryption and path obfuscation must both
+   be off**. We write plaintext chunks keyed by path; either setting silently
+   stops the projection matching what the clients read.
+
+#### Backfilling what was already sent
+
+A vault that starts empty starts with no topics, and a topic note appears on a
+thing's second mention -- which for most things means waiting months. The
+`history` table already holds every story ever delivered, so:
+
+```bash
+python -m src.vault.backfill --dry-run          # how many rows, how many model calls
+python -m src.vault.backfill --since 2026-07-01 # a recent slice first
+python -m src.vault.backfill                    # the lot
+```
+
+It is resumable and idempotent: a story whose note is already on disk is skipped
+without a model call, so an interrupted run is resumed by running it again.
+
+It recovers less than a live run does, permanently, and every note it writes says
+`backfilled: true` because of it. `history` stores eight columns per story, so
+**raw content is gone** (`description` was never persisted) and **the
+multi-outlet byline is gone** (clustering kept only the primary link). Entities
+are re-extracted by the model from the title and summary rather than an article,
+so expect headline-level things and some misses. The note's date is the day it
+was *emailed*; the publication date was never stored.
+
+[Self-hosted LiveSync]: https://github.com/vrtmrz/obsidian-livesync
 
 ### Admin authentication
 
@@ -310,30 +442,52 @@ Access at `http://<host>:8089/` (dashboard), `/history`, `/admin`. The
 container always listens on port 8080 internally; map whichever external port
 you want via `-p`.
 
-### Remote deploy script (`deploy.sh`)
+### Remote deploy script (`./deploy`)
 
-`deploy.sh` cross-compiles a `linux/amd64` image on the dev machine (via
-`docker buildx`), saves it to a tar, transfers it plus the YAML config files
-over SSH, and (re)starts the container on a remote Docker host (written for a
-QNAP NAS via container-station). Copy `deploy.env.example` to `.deploy.env`
-(git-ignored) and fill in `TARGET_USER`/`TARGET_HOST`/`SSH_PORT` for your
-target -- the script auto-sources it, so nothing needs exporting by hand or
-editing in the tracked script -- then:
+`./deploy` builds the image, ships it to the NAS with each instance's config
+files, ships the compose definition and brings the stack up over ssh. Copy
+`deploy.env.example` to `.deploy.env` (git-ignored) and fill in
+`NAS_SSH`/`NAS_SSH_PORT` for your target -- the script auto-sources it, so
+nothing needs exporting by hand or editing in the tracked script -- then:
 
 ```bash
-./deploy.sh                      # defaults to --instance security
-./deploy.sh --instance news
+./deploy                         # every instance under instances/
+./deploy --instance news         # just that one
+./deploy ship                    # build + ship, nothing applied
 ```
 
+Its verbs (`ship`, `apply`, `render`, `check`, `--no-apply`) are shared with the
+three sibling NAS projects; see `homelab/README.md` for the contract. This was
+two scripts until they were merged -- `deploy.sh` and `deploy-native.sh`,
+differing only in where the image was built. They had already drifted apart in a
+way that mattered: the native one invoked `src/reconcile.py` without its stamp
+argument, silently disabling the protection described below for `sources.yaml`
+and the `llm:` block.
+
 `--instance <name>` selects which directory under `instances/` is deployed, and
-derives the target path (`/share/Container/<name>-digest`), container name
-(`<name>-digest-web`) and host port from it. The image itself is instance-independent
-and shared, so it's built once per deploy regardless.
+derives the target path (`/share/Container/<name>-digest`) from it. Deploying
+every instance is the default: defaulting to one meant a plain deploy left the
+others running stale config with nothing in the output to say so.
 
-Use this when the dev machine can cross-compile for the target's architecture
-without issue, or you'd rather not run a build on the NAS itself.
+`--build-on` picks where the image is built:
 
-Before building, both `deploy.sh` and `deploy-native.sh` reconcile the
+- `mac` (default) cross-compiles `linux/amd64` here with `docker buildx` and
+  streams it straight into `docker load` on the NAS over one SSH pipe -- no
+  intermediate tar on either end -- then verifies with `docker image inspect`
+  that it actually landed (`docker load` exits 0 after failing mid-stream often
+  enough to be worth checking).
+- `nas` skips cross-compilation entirely: it pushes the build context
+  (`Dockerfile`, `requirements.txt`, `src/` -- all the Dockerfile needs) to a
+  disposable directory on the NAS and runs `docker build` there, so the image is
+  built for whatever architecture that Docker daemon actually is. No `--platform`,
+  no QEMU emulation. The build directory is wiped and re-pushed each time and is
+  never an instance directory, so nothing there can reach a seen-store, history
+  or digest output. Prefer it when cross-compiling is slow or unreliable.
+
+`.env` is not synced by either path: copy it once by hand and keep it current on
+the target.
+
+Before building, `./deploy` reconciles the
 target's live admin-panel state back into the local git-tracked files, so a
 deploy can't silently clobber edits made from the browser:
 
@@ -347,63 +501,58 @@ deploy can't silently clobber edits made from the browser:
   copy, overwrites the local copy outright (the target's version wins; check
   `git diff` afterwards to decide whether to keep or discard it in git).
 
-### Remote deploy script, built natively on the target (`deploy-native.sh`)
+### Running on the NAS (`docker-compose.nas.yml`)
 
-`deploy-native.sh` skips cross-compilation entirely: it rsyncs the source to a
-disposable build directory on the target and runs `docker build` there, so the
-image is built for whatever architecture the target's own Docker daemon
-actually is -- no `--platform` flag, no QEMU emulation. It prints the target's
-`uname -m` and Docker-reported architecture first so you can confirm what
-you're building for. The source sync only ever touches its own disposable
-build directory (`TARGET_BUILD_PATH`), never the persistent directory holding
-`data/`/`output/`/config/`.env` (`TARGET_DATA_PATH`) -- `rsync --delete` can't
-reach your real seen-store or history no matter what. Edit the same target
-variables at the top of the script, then:
+`docker-compose.nas.yml` defines both instances as one compose project
+(`name: daily-digests`) running the image `./deploy` already built -- it doesn't
+build anything itself. `./deploy` ships it to `/share/Container/daily-digests/`
+and runs `docker compose up -d` there over ssh. One command, no UI step.
+
+The tracked file ships with placeholder qnet IPs; `./deploy render` fills them in
+from `.deploy.env` (see `deploy.env.example`) and writes
+`deploy-out/docker-compose.nas.yml`, which is the copy that gets shipped. Real
+addresses never land in a tracked file. Secrets stay out of the YAML too: each
+instance reads its own `.env` from its own directory via `env_file:`.
 
 ```bash
-./deploy-native.sh
+./deploy                        # ship, then compose up -d
+./deploy --no-apply             # ship only, leave the containers running
+./deploy apply                  # compose up -d from what's already shipped
 ```
 
-Prefer this when cross-compiling is slow/unreliable, or you just want the
-build to happen on the same architecture it'll run on. Same `.env` caveat as
-`deploy.sh`: not synced automatically, copy it once by hand and keep it
-current on the target.
+`compose up -d` recreates only the services whose definition or image actually
+changed, and picks up `config.yaml`/`.env` changes for free -- a container is
+*created* fresh, which is what a plain `docker restart` never did.
 
-### Running via QNAP Container Station (no CLI for day-to-day ops)
-
-`container-station-app.yaml` is a Container Station "Application" definition
-(Docker Compose under the hood) that runs the image `deploy.sh`/
-`deploy-native.sh` already built -- it doesn't build anything itself. The
-tracked file ships with placeholder qnet IPs, so run
-`./deploy.sh --render-station` first (fills them in from `.deploy.env` --
-see `deploy.env.example`) and point Container Station's Applications ->
-Create at the rendered `deploy-out/container-station-app.yaml` instead,
-once. After that, picking up a newly built image or an edited `.env` is a
-"Recreate" click in the UI instead of manual `docker stop`/`rm`/`run` over
-SSH (a plain `docker restart` does **not** pick up either of those -- see
-the comment at the top of the file). Secrets are kept out of the YAML via
-`env_file:` pointing at the existing `.env`, rather than inlined.
-
-It runs on a static LAN IP on the `qnet-static-eth1-dc7e3a` network (see
-`STATION_IP_SECURITY` in `deploy.env.example`) rather than a NAT'd port
+Each instance runs on a static LAN IP on the `qnet-static-eth1-dc7e3a` network
+(see `APP_LAN_IP_SECURITY` in `deploy.env.example`) rather than a NAT'd port
 mapping, so it's reached directly at `http://<that IP>:8080/` -- **not**
-`http://<nas host>:8089/` from the manual-CLI instructions above, which is a
-separate access point tied to the manually-run container. Only one of the two
-should be running at a time to avoid confusion about which one you're looking
-at.
+`http://<nas host>:8089/` from the manual-CLI instructions above. Expect the NAS
+host itself to be unable to reach those addresses: a host cannot talk to its own
+macvlan children, so probe from another machine (`./deploy check` does).
 
-Once Container Station owns the running container, rebuild/reload the image
-with `--skip-run` so `deploy.sh`/`deploy-native.sh` don't also try to
-stop/rm/run their own container on the old port-mapped convention (which
-would silently take you off the static IP):
+#### Why this stopped being a Container Station "Application"
 
-```bash
-./deploy.sh --skip-run          # or ./deploy-native.sh --skip-run
-```
+It used to be one, pasted into Container Station's UI and applied with a
+"Recreate" click. A Container Station Application is a plain compose project too
+-- the same `docker compose` v2.29.1 -- and the only real difference is that
+Container Station keeps its **own copy** of the YAML under
+`.qpkg/container-station/data/application/<name>/`. "Recreate" re-reads that
+copy, not this repo's file, so every change here needed a manual re-paste and
+forgetting was silent.
 
-Then apply it: Container Station -> Applications -> security-digest ->
-Recreate. That also picks up any `config.yaml`/`.env` changes, for the same
-reason a plain "Restart" doesn't.
+Three things made that a bad trade, and none of them was compensated:
+
+- the deploy couldn't be one command -- render, paste, click;
+- Container Station rejects resource limits in the pasted YAML and wants them set
+  in its own panel, so they couldn't be version-controlled here (the panel it
+  generated for these two services contained nothing but zeros);
+- surviving a NAS reboot comes from `restart: unless-stopped`, which the docker
+  daemon honours whoever started the container -- not from being an Application.
+
+Container Station still owns the qnet macvlan network this joins as
+`external: true`, and still lists these containers under **Containers** for logs
+and start/stop. Only the Application wrapper is gone.
 
 ## Architecture
 
@@ -420,6 +569,13 @@ src/
   digest.py      group items into sections, render markdown (HTML-escaped)
   delivery.py    console / file / email delivery
   history.py     log of delivered items, for the History page
+  vault/         project delivered digests into an Obsidian vault over LiveSync
+    livesync.py    LiveSync's CouchDB document format (chunks + path-keyed entries)
+    notes.py       the ownership contract for topic notes several apps write to
+    text.py        slugs, escaping, entity canonicalisation -- shared rules, do not drift
+    topics.py      per-(thing, story) mentions, the note threshold, the topic note
+    render.py      story notes
+    backfill.py    one-off: rebuild the vault from the history table
   status.py      last-run status, for the dashboard
   db.py          shared SQLite connection (data/digest.db: seen, status, history)
   llm_models.py  curated model catalog + live provider validation
@@ -430,7 +586,8 @@ tests/           pytest suite for the pure/dependency-free functions above
 ```
 
 `data/digest.db` (SQLite, WAL mode) holds the seen-link store, last-run
-status, and delivery history -- previously three separate JSON files, each
+status, delivery history, feed health, the weekly queue, token usage, and the
+vault's entity mentions -- previously three separate JSON files, each
 rewritten wholesale on every write with no locking. If those JSON files exist
 from an older version, they're imported into the database automatically and
 losslessly on first access, then left in place untouched (not deleted).

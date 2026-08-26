@@ -2,6 +2,8 @@
 
 import httpx
 import pytest
+
+import src.summariser as summariser
 from openai import BadRequestError as OpenAIBadRequestError
 
 from src.summariser import (
@@ -451,3 +453,63 @@ def test_a_missing_prompt_file_is_not_reported_as_drift(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "PROMPT_PATH", tmp_path / "gone.txt")
     monkeypatch.setattr(s, "BATCH_PROMPT_PATH", tmp_path / "also_gone.txt")
     assert prompt_vocabulary_drift({"llm": {"categories": ["news"]}}) == []
+
+
+# --- entity extraction (src/vault/) -----------------------------------------
+
+class TestEntityExtraction:
+    ON = {"llm": {"extract_entities": True, "categories": ["news"], "domains": ["security"]}}
+    OFF = {"llm": {"categories": ["news"]}}
+
+    def test_the_field_is_absent_from_the_schema_when_off(self):
+        schema = summariser._result_schema(array=False, allowed=["news"])
+        assert "entities" not in schema["properties"]
+        assert "entities" not in schema["required"]
+
+    def test_the_field_is_required_when_on(self):
+        schema = summariser._result_schema(array=False, allowed=["news"], with_entities=True)
+        assert schema["properties"]["entities"] == {"type": "array", "items": {"type": "string"}}
+        assert "entities" in schema["required"]
+
+    def test_the_cluster_schema_carries_it_too(self):
+        schema = summariser._cluster_schema(["news"], with_entities=True)
+        item = schema["properties"]["clusters"]["items"]
+        assert "entities" in item["properties"] and "entities" in item["required"]
+
+    def test_an_instance_without_it_gets_no_field_on_the_item(self):
+        assert summariser._coerce_entities(["Fortinet"], self.OFF) == {}
+
+    def test_spellings_of_one_thing_are_deduped(self):
+        result = summariser._coerce_entities(
+            ["Fortinet", "fortinet", "FORTINET Inc."], self.ON
+        )
+        assert result == {"entities": ["Fortinet"]}
+
+    def test_a_response_that_ignored_the_schema_yields_an_empty_list(self):
+        """OpenRouter downgrades json_schema to json_object for providers without
+        structured output, so this may be handed anything at all."""
+        for junk in ("Fortinet, Okta", None, {"a": 1}, [1, 2, 3], [{"name": "x"}]):
+            assert summariser._coerce_entities(junk, self.ON) == {"entities": []}
+
+    def test_a_sentence_fragment_is_dropped(self):
+        long = "a" * (summariser.MAX_ENTITY_CHARS + 1)
+        assert summariser._coerce_entities([long, "Okta"], self.ON) == {"entities": ["Okta"]}
+
+    def test_the_list_is_capped(self):
+        names = [f"Thing{i}" for i in range(30)]
+        result = summariser._coerce_entities(names, self.ON)
+        assert len(result["entities"]) == summariser.MAX_ENTITIES_PER_ITEM
+
+    def test_drift_warns_when_the_prompt_never_asks_for_entities(self, tmp_path, monkeypatch):
+        prompt = tmp_path / "p.txt"
+        prompt.write_text("- news: something happened\n", encoding="utf-8")
+        monkeypatch.setattr(summariser, "PROMPT_PATH", prompt)
+        monkeypatch.setattr(summariser, "BATCH_PROMPT_PATH", prompt)
+
+        config = {"llm": {"extract_entities": True, "categories": ["news"]}}
+        assert any("never mentions entities" in m
+                   for m in summariser.prompt_vocabulary_drift(config))
+
+        config["llm"]["extract_entities"] = False
+        assert not any("never mentions entities" in m
+                       for m in summariser.prompt_vocabulary_drift(config))

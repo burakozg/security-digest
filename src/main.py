@@ -20,6 +20,7 @@ from src.history import record_sent
 from src.routing import EXCLUDE, accepts_domain, accepts_feed
 from src.status import update as update_status
 from src.utils import PROJECT_ROOT, slug
+from src.vault import project_digest
 from src.weekly import is_weekly, send_day_label, send_due
 from src.weekly import queue as queue_weekly
 
@@ -169,6 +170,10 @@ def run(config_path: Path | None = None, digest_filter: list[str] | None = None)
             log.info("Delivering...")
             deliver(content, config, title=d.get("title"), digest_cfg=d)
             record_sent(filtered, d.get("title", "Digest"), config)
+            # After delivery and after the history row, deliberately: the vault
+            # is a record of what was sent, and project_digest never raises, so
+            # a sleeping CouchDB cannot cost the run its success.
+            project_digest(filtered, d, config)
             total_delivered += len(filtered)
 
         # Anything summarised but accepted by no digest. 'exclude' is a decision
