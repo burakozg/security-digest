@@ -195,14 +195,12 @@
 
     <div class="card">
       <h2>LLM provider &amp; model</h2>
-      <p>Choose OpenAI, Anthropic, Mistral or OpenRouter and a model. Recommended picks are grouped at the top.</p>
+      <p>Choose Mistral or OpenRouter and a model. Recommended picks are grouped at the top.</p>
       <p id="ollamaWarn" class="hint" style="display:none"></p>
       <div class="row">
         <div class="field">
           <label for="llmProvider">Provider</label>
           <select id="llmProvider" class="llm">
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
             <option value="mistral">Mistral</option>
             <option value="openrouter">OpenRouter</option>
           </select>
@@ -219,7 +217,7 @@
           <input type="text" id="llmCustomModel" placeholder="e.g. a brand-new model not in the curated list yet" style="width:100%;padding:8px 12px;border-radius:var(--radius-sm);background:var(--bg);color:var(--text);border:1px solid var(--border);font-size:0.9rem;">
         </div>
       </div>
-      <p class="hint">OpenAI: <code>OPENAI_API_KEY</code> in <code>.env</code>. Anthropic: <code>ANTHROPIC_API_KEY</code>. Mistral: <code>MISTRAL_API_KEY</code>. OpenRouter: <code>OPENROUTER_API_KEY</code>. Saving writes <code>data/llm_overrides.yaml</code> so <code>config.yaml</code> can stay read-only.</p>
+      <p class="hint">Mistral: <code>MISTRAL_API_KEY</code> in <code>.env</code>. OpenRouter: <code>OPENROUTER_API_KEY</code>. Saving writes <code>data/llm_overrides.yaml</code> so <code>config.yaml</code> can stay read-only.</p>
       <div id="llmMsg"></div>
     </div>
   </div>
@@ -290,11 +288,11 @@
       const warn = document.getElementById('ollamaWarn');
       if (data.provider === 'ollama') {
         warn.style.display = 'block';
-        warn.textContent = 'Active provider is ollama (set in config.yaml). Saving here switches to OpenAI, Anthropic, Mistral or OpenRouter.';
-        prov.value = 'openai';
+        warn.textContent = 'Active provider is ollama (set in config.yaml). Saving here switches to Mistral or OpenRouter.';
+        prov.value = 'openrouter';
       } else {
         warn.style.display = 'none';
-        prov.value = [...prov.options].some(o => o.value === data.provider) ? data.provider : 'openai';
+        prov.value = [...prov.options].some(o => o.value === data.provider) ? data.provider : 'openrouter';
       }
       buildModelOptions(prov.value);
       const sel = document.getElementById('llmModel');

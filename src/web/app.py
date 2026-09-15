@@ -796,8 +796,8 @@ def admin_get_llm():
     config = _load_config()
     llm = config.get("llm", {})
     return {
-        "provider": llm.get("provider", "openai"),
-        "model": llm.get("model", "gpt-5.6-luna"),
+        "provider": llm.get("provider", "openrouter"),
+        "model": llm.get("model", "qwen/qwen3.7-flash"),
         "temperature": llm.get("temperature", 0.3),
         "models": catalog(),
     }
@@ -808,9 +808,9 @@ def admin_set_llm(body: dict = Body(...)):
     """Update llm.provider and llm.model in writable LLM overrides file."""
     provider = (body.get("provider") or "").strip().lower()
     model = (body.get("model") or "").strip()
-    if provider not in ("openai", "anthropic", "mistral", "openrouter"):
+    if provider not in ("mistral", "openrouter"):
         return JSONResponse(
-            {"ok": False, "message": "provider must be openai, anthropic, mistral or openrouter"},
+            {"ok": False, "message": "provider must be mistral or openrouter"},
             status_code=400,
         )
     if not is_valid_model(provider, model):

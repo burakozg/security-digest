@@ -1,7 +1,7 @@
 # Security Digest
 
-Fetches news, summarises and categorises each item with an LLM (Anthropic,
-OpenAI, Mistral or OpenRouter), groups the results into one or more digests, and delivers
+Fetches news, summarises and categorises each item with an LLM (Mistral or
+OpenRouter -- open-weight models only), groups the results into one or more digests, and delivers
 them by email (or file/console) on a daily schedule. Includes a small FastAPI
 web UI for viewing digests, browsing history, and administering feeds, prompts,
 and the LLM model from the browser.
@@ -44,12 +44,11 @@ panel drive the other), and deploying it with `--instance <name>`.
 ## Quick start
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+uv sync
 
 cp .env.example .env
-# then edit .env: set the key for your llm.provider (OPENAI_API_KEY /
-# ANTHROPIC_API_KEY / MISTRAL_API_KEY), SMTP_* if using
+# then edit .env: set the key for your llm.provider (MISTRAL_API_KEY /
+# OPENROUTER_API_KEY), SMTP_* if using
 # email delivery, and DIGEST_ADMIN_TOKEN (generate with: openssl rand -hex 32)
 
 DIGEST_ROOT=instances/security .venv/bin/uvicorn src.web.app:app --reload --port 8080
@@ -76,7 +75,7 @@ All paths below are relative to an instance directory (`instances/<name>/`).
 | `sources.yaml` | RSS feed list (name + URL) |
 | `topics.yaml` | **Seed** topic list for a brand-new instance; the live list is `data/topics.yaml`, written by the admin panel |
 | `schedule.txt` | Daily run time (`enabled`, `hour`, `minute`, `timezone`) -- the only place schedule settings live; do not add a `schedule:` block to `config.yaml`, it would be silently overridden |
-| `.env` | Secrets: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `SMTP_USER`/`SMTP_PASSWORD`, `DIGEST_ADMIN_TOKEN`, `VAULT_COUCHDB_URL`/`VAULT_COUCHDB_PASSWORD` |
+| `.env` | Secrets: `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `SMTP_USER`/`SMTP_PASSWORD`, `DIGEST_ADMIN_TOKEN`, `VAULT_COUCHDB_URL`/`VAULT_COUCHDB_PASSWORD` |
 
 ### Multiple readers in one instance
 
@@ -230,7 +229,7 @@ Topic instances also want `sources.max_age_days`, since news search — unlike a
 publisher feed — happily returns years-old articles.
 
 The admin panel (`/admin`) can edit topics, RSS sources, the LLM provider/model
-(OpenAI, Anthropic, Mistral or OpenRouter),
+(Mistral or OpenRouter),
 and prompts at runtime. Topics, RSS sources and the LLM provider/model are
 written to `data/sources_overrides.yaml`/`data/llm_overrides.yaml` (so
 `config.yaml`/`sources.yaml` can stay read-only). Topics, recipients and prompts
@@ -384,8 +383,8 @@ browser prompts for the token once and caches it in `localStorage`.
 ## Running tests
 
 ```bash
-.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
-.venv/bin/pytest
+uv sync
+uv run pytest
 ```
 
 ## Deployment
@@ -477,7 +476,7 @@ others running stale config with nothing in the output to say so.
   that it actually landed (`docker load` exits 0 after failing mid-stream often
   enough to be worth checking).
 - `nas` skips cross-compilation entirely: it pushes the build context
-  (`Dockerfile`, `requirements.txt`, `src/` -- all the Dockerfile needs) to a
+  (`Dockerfile`, `pyproject.toml`, `uv.lock`, `src/` -- all the Dockerfile needs) to a
   disposable directory on the NAS and runs `docker build` there, so the image is
   built for whatever architecture that Docker daemon actually is. No `--platform`,
   no QEMU emulation. The build directory is wiped and re-pushed each time and is

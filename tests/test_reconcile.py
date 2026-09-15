@@ -86,29 +86,29 @@ def test_merge_sources_identical_content_is_noop(tmp_path):
 
 def test_merge_llm_no_override_file_is_noop(tmp_path):
     config = tmp_path / "config.yaml"
-    config.write_text(yaml.dump({"llm": {"provider": "anthropic", "model": "claude-haiku-4-5", "temperature": 0.3}}))
+    config.write_text(yaml.dump({"llm": {"provider": "mistral", "model": "mistral-large-latest", "temperature": 0.3}}))
     override = tmp_path / "llm_overrides.yaml"  # does not exist
 
     changes = merge_llm(config, override)
 
     assert changes == []
-    assert yaml.safe_load(config.read_text())["llm"]["provider"] == "anthropic"
+    assert yaml.safe_load(config.read_text())["llm"]["provider"] == "mistral"
 
 
 def test_merge_llm_applies_override_and_keeps_untouched_keys(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text(yaml.dump({
-        "llm": {"provider": "anthropic", "model": "claude-haiku-4-5", "temperature": 0.3, "batch_size": 8},
+        "llm": {"provider": "mistral", "model": "mistral-large-latest", "temperature": 0.3, "batch_size": 8},
     }))
     override = tmp_path / "llm_overrides.yaml"
-    override.write_text(yaml.dump({"llm": {"provider": "openai", "model": "gpt-5.6-luna"}}))
+    override.write_text(yaml.dump({"llm": {"provider": "openrouter", "model": "qwen/qwen3.7-flash"}}))
 
     changes = merge_llm(config, override)
 
     assert len(changes) == 2  # provider and model both changed
     merged = yaml.safe_load(config.read_text())["llm"]
-    assert merged["provider"] == "openai"
-    assert merged["model"] == "gpt-5.6-luna"
+    assert merged["provider"] == "openrouter"
+    assert merged["model"] == "qwen/qwen3.7-flash"
     # untouched by the override -- preserved from base
     assert merged["temperature"] == 0.3
     assert merged["batch_size"] == 8
@@ -116,9 +116,9 @@ def test_merge_llm_applies_override_and_keeps_untouched_keys(tmp_path):
 
 def test_merge_llm_identical_content_is_noop(tmp_path):
     config = tmp_path / "config.yaml"
-    config.write_text(yaml.dump({"llm": {"provider": "openai", "model": "gpt-5.6-luna"}}))
+    config.write_text(yaml.dump({"llm": {"provider": "openrouter", "model": "qwen/qwen3.7-flash"}}))
     override = tmp_path / "llm_overrides.yaml"
-    override.write_text(yaml.dump({"llm": {"provider": "openai", "model": "gpt-5.6-luna"}}))
+    override.write_text(yaml.dump({"llm": {"provider": "openrouter", "model": "qwen/qwen3.7-flash"}}))
 
     changes = merge_llm(config, override)
 
@@ -131,18 +131,18 @@ def test_merge_llm_preserves_other_top_level_config_keys(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text(yaml.dump({
         "retry": {"max_retries": 3},
-        "llm": {"provider": "anthropic", "model": "claude-haiku-4-5"},
+        "llm": {"provider": "mistral", "model": "mistral-large-latest"},
         "digests": [{"title": "Security Digest"}],
     }))
     override = tmp_path / "llm_overrides.yaml"
-    override.write_text(yaml.dump({"llm": {"provider": "openai", "model": "gpt-5.6-luna"}}))
+    override.write_text(yaml.dump({"llm": {"provider": "openrouter", "model": "qwen/qwen3.7-flash"}}))
 
     merge_llm(config, override)
 
     doc = yaml.safe_load(config.read_text())
     assert doc["retry"] == {"max_retries": 3}
     assert doc["digests"] == [{"title": "Security Digest"}]
-    assert doc["llm"]["provider"] == "openai"
+    assert doc["llm"]["provider"] == "openrouter"
 
 
 def test_merge_sources_folds_back_a_routing_change(tmp_path):

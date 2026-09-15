@@ -272,8 +272,8 @@ def test_reasoning_defaults_to_disabled_on_openrouter():
 
 
 def test_reasoning_is_never_sent_to_other_providers():
-    """`reasoning` is an OpenRouter extension; OpenAI and Mistral 400 on it."""
-    for provider in ("openai", "mistral"):
+    """`reasoning` is an OpenRouter extension; Mistral and Ollama 400 on it."""
+    for provider in ("mistral", "ollama"):
         client = _CapturingOpenAI()
         _call_llm(client, {"llm": {"provider": provider, "model": "m", "reasoning": False}},
                   "Classify these items.", {"type": "object"})

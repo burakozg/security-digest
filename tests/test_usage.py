@@ -6,19 +6,10 @@ from types import SimpleNamespace
 from src.usage import daily, estimate_cost, extract_usage, record
 
 
-class _AnthropicResp:
-    """Shape confirmed against the installed SDK: input_tokens/output_tokens."""
-    usage = SimpleNamespace(input_tokens=1200, output_tokens=340,
-                            cache_read_input_tokens=0, service_tier="standard")
-
-
 class _OpenAIResp:
-    """OpenAI and every OpenAI-compatible endpoint: prompt/completion_tokens."""
+    """Every call on this path goes through the OpenAI SDK (OpenAI-compatible
+    endpoints only): prompt_tokens/completion_tokens."""
     usage = SimpleNamespace(prompt_tokens=900, completion_tokens=210, total_tokens=1110)
-
-
-def test_extract_usage_reads_the_anthropic_shape():
-    assert extract_usage(_AnthropicResp()) == (1200, 340)
 
 
 def test_extract_usage_reads_the_openai_shape():
@@ -34,9 +25,9 @@ def test_extract_usage_returns_none_when_absent():
 
 
 def test_cost_uses_the_catalog_price():
-    # claude-haiku-4-5 is $1.00 in / $5.00 out per 1M.
-    assert estimate_cost("anthropic", "claude-haiku-4-5", 1_000_000, 1_000_000) == 6.0
-    assert estimate_cost("anthropic", "claude-haiku-4-5", 500_000, 0) == 0.5
+    # mistral-large-latest is $0.50 in / $1.50 out per 1M.
+    assert estimate_cost("mistral", "mistral-large-latest", 1_000_000, 1_000_000) == 2.0
+    assert estimate_cost("mistral", "mistral-large-latest", 500_000, 0) == 0.25
 
 
 def test_cost_is_none_for_a_model_not_in_the_catalog():
@@ -46,13 +37,13 @@ def test_cost_is_none_for_a_model_not_in_the_catalog():
 
 
 def test_cost_lookup_is_provider_scoped():
-    assert estimate_cost("openai", "claude-haiku-4-5", 1_000_000, 0) is None
+    assert estimate_cost("openrouter", "mistral-large-latest", 1_000_000, 0) is None
 
 
 def test_record_and_daily_totals(tmp_path):
     db = tmp_path / "digest.db"
-    record("anthropic", "claude-haiku-4-5", 1000, 200, kind="cluster", db_path=db)
-    record("anthropic", "claude-haiku-4-5", 500, 100, kind="batch", db_path=db)
+    record("mistral", "mistral-large-latest", 1000, 200, kind="cluster", db_path=db)
+    record("mistral", "mistral-large-latest", 500, 100, kind="batch", db_path=db)
 
     rows = daily(days=7, db_path=db)
     assert len(rows) == 1
@@ -63,14 +54,14 @@ def test_record_and_daily_totals(tmp_path):
     assert today["output_tokens"] == 300
     assert today["total_tokens"] == 1800
     assert today["cost_is_partial"] is False
-    assert today["cost_usd"] == round(1500 / 1e6 * 1.0 + 300 / 1e6 * 5.0, 4)
-    assert today["models"] == ["anthropic/claude-haiku-4-5"]
+    assert today["cost_usd"] == round(1500 / 1e6 * 0.50 + 300 / 1e6 * 1.50, 4)
+    assert today["models"] == ["mistral/mistral-large-latest"]
 
 
 def test_an_uncosted_call_marks_the_day_partial(tmp_path):
     """Otherwise a day's total reads as complete when part of it is missing."""
     db = tmp_path / "digest.db"
-    record("anthropic", "claude-haiku-4-5", 1000, 0, db_path=db)
+    record("mistral", "mistral-large-latest", 1000, 0, db_path=db)
     record("openrouter", "someone/unlisted-model", 5_000_000, 0, db_path=db)
 
     today = daily(days=1, db_path=db)[0]
@@ -83,18 +74,18 @@ def test_recording_never_raises_even_on_a_broken_database(tmp_path):
     """Accounting must not be able to fail a digest that was produced fine."""
     unwritable = tmp_path / "nope"
     unwritable.write_text("not a database")
-    record("anthropic", "claude-haiku-4-5", 1, 1, db_path=unwritable)   # must not raise
+    record("mistral", "mistral-large-latest", 1, 1, db_path=unwritable)   # must not raise
 
 
 def test_daily_window_excludes_older_days(tmp_path):
     db = tmp_path / "digest.db"
-    record("anthropic", "claude-haiku-4-5", 10, 1, db_path=db)
+    record("mistral", "mistral-large-latest", 10, 1, db_path=db)
     from src.db import get_connection
     old = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
     conn = get_connection(db)
     conn.execute(
         "INSERT INTO token_usage (at, day, provider, model, kind, input_tokens, output_tokens, cost_usd) "
-        "VALUES (?, ?, 'anthropic', 'claude-haiku-4-5', 'batch', 999, 0, 0.001)",
+        "VALUES (?, ?, 'mistral', 'mistral-large-latest', 'batch', 999, 0, 0.001)",
         (old + "T09:00:00", old),
     )
     conn.commit(); conn.close()
@@ -104,19 +95,20 @@ def test_daily_window_excludes_older_days(tmp_path):
 
 
 def test_a_dated_model_id_is_priced_as_its_alias():
-    """config.yaml pins dated ids (claude-haiku-4-5-20251001) while the catalog
-    lists aliases, so exact-match-only left the project's own default
-    configuration with no price at all."""
-    dated = estimate_cost("anthropic", "claude-haiku-4-5-20251001", 1_000_000, 1_000_000)
-    alias = estimate_cost("anthropic", "claude-haiku-4-5", 1_000_000, 1_000_000)
-    assert dated == alias == 6.0
+    """A config might pin a dated snapshot id (qwen/qwen3.7-flash-20260101)
+    while the catalog lists the bare qwen/qwen3.7-flash alias, so an
+    exact-match-only lookup would leave a pinned model with no price at all."""
+    dated = estimate_cost("openrouter", "qwen/qwen3.7-flash-20260101", 1_000_000, 1_000_000)
+    alias = estimate_cost("openrouter", "qwen/qwen3.7-flash", 1_000_000, 1_000_000)
+    assert dated == alias == 0.16
 
 
 def test_the_longest_matching_alias_wins():
-    """claude-sonnet-4-6-2026xxxx must price as claude-sonnet-4-6, never as a
-    shorter id that happens to prefix it."""
+    """google/gemini-2.5-flash is a real prefix of the catalog's own
+    google/gemini-2.5-flash-lite id -- a dated pin of the lite model must not
+    be mispriced as the (also real, also catalogued) shorter one it prefixes."""
     from src.usage import _price_for
-    assert _price_for("anthropic", "claude-sonnet-4-6-20260101") == (3.00, 15.00)
+    assert _price_for("openrouter", "google/gemini-2.5-flash-lite-20260101") == (0.10, 0.40)
 
 
 def test_a_different_release_does_not_borrow_a_price():

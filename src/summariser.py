@@ -273,18 +273,13 @@ def _result_schema(
 
 
 def _get_client(config: dict[str, Any]) -> Any:
-    """Create API client for OpenAI, Anthropic, Mistral, OpenRouter or Ollama.
-    All but Anthropic are OpenAI-compatible, so they reuse the OpenAI SDK with a
-    different base_url."""
+    """Create API client for Mistral, OpenRouter or Ollama -- all OpenAI-compatible,
+    reached through the OpenAI SDK with a different base_url. OpenAI's own hosted
+    API and Anthropic are not usable providers here (open-weight models only), so
+    an unrecognised provider raises rather than silently falling back to either."""
     llm = config.get("llm", {})
-    provider = llm.get("provider", "openai")
+    provider = llm.get("provider", "openrouter")
 
-    if provider == "anthropic":
-        try:
-            from anthropic import Anthropic
-        except ImportError as e:
-            raise RuntimeError("Install anthropic: pip install anthropic") from e
-        return Anthropic()  # ANTHROPIC_API_KEY from env
     if provider == "mistral":
         # api_key must be passed explicitly -- a bare OpenAI() would silently pick
         # up OPENAI_API_KEY and send it to Mistral.
@@ -304,7 +299,9 @@ def _get_client(config: dict[str, Any]) -> Any:
             base_url="http://localhost:11434/v1",
             api_key="ollama",
         )
-    return OpenAI()  # uses OPENAI_API_KEY from env
+    raise RuntimeError(
+        f"Unsupported llm.provider {provider!r}; use mistral, openrouter or ollama"
+    )
 
 
 # Some OpenAI-compatible endpoints refuse `response_format` unless the word
@@ -359,7 +356,7 @@ def _log_usage(config: dict[str, Any], response: Any, kind: str) -> None:
         return
     llm = config.get("llm", {})
     record_usage(
-        llm.get("provider", "openai"), llm.get("model", ""), counts[0], counts[1], kind=kind
+        llm.get("provider", "openrouter"), llm.get("model", ""), counts[0], counts[1], kind=kind
     )
 
 
@@ -370,8 +367,8 @@ def _call_llm(
     the response content (guaranteed valid JSON matching schema). Retries on
     transient failures."""
     llm = config.get("llm", {})
-    provider = llm.get("provider", "openai")
-    model = llm.get("model", "gpt-5.6-luna")
+    provider = llm.get("provider", "openrouter")
+    model = llm.get("model", "qwen/qwen3.7-flash")
     temperature = float(llm.get("temperature", 0.3))
     reasoning = bool(llm.get("reasoning", False))
 
@@ -380,34 +377,7 @@ def _call_llm(
     initial_delay = retry_cfg.get("initial_delay", 1.0)
     max_delay = retry_cfg.get("max_delay", 60.0)
 
-    if provider == "anthropic":
-        # Lazy import: anthropic is an optional dependency (only needed for this
-        # provider), matching the lazy import in _get_client.
-        from anthropic import AuthenticationError as AnthropicAuthError
-
-        def _do_anthropic() -> str:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=16384,
-                temperature=temperature,
-                messages=[{"role": "user", "content": prompt}],
-                output_config={"format": {"type": "json_schema", "schema": schema}},
-            )
-            _log_usage(config, resp, kind)
-            parts: list[str] = []
-            for block in resp.content:
-                t = getattr(block, "text", None)
-                if t:
-                    parts.append(t)
-            return "".join(parts)
-
-        return retry(
-            _do_anthropic,
-            max_retries=max_retries, initial_delay=initial_delay, max_delay=max_delay,
-            non_retryable=(AnthropicAuthError,),
-        )
-
-    # OpenAI, plus the OpenAI-compatible endpoints of Mistral and Ollama. Where a
+    # The OpenAI-compatible endpoints of Mistral, OpenRouter and Ollama. Where a
     # compatible endpoint doesn't accept an OpenAI-specific request param it 400s
     # deterministically, so _OPENAI_PARAM_FALLBACKS drops that param and retries
     # immediately -- failing outright would send the whole batch down the

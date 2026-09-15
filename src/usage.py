@@ -56,12 +56,12 @@ def _price_for(provider: str, model: str) -> tuple[float, float] | None:
     """(input, output) USD per 1M tokens for a model, or None if unlisted.
 
     Falls back to the longest catalog id that this model is a dated release of:
-    config.yaml pins `claude-haiku-4-5-20251001` while the catalog lists the
-    `claude-haiku-4-5` alias, so an exact-match-only lookup left the project's
-    own default configuration with no price at all. The suffix must look like a
-    version (`-` followed by a digit) so that, say, `mistral-small` never picks
-    up `mistral-small-latest`'s price by accident -- a different release with
-    genuinely different rates."""
+    a config might pin a dated snapshot id (e.g. `qwen/qwen3.7-flash-20260101`)
+    while the catalog lists the bare `qwen/qwen3.7-flash` alias, so an
+    exact-match-only lookup would leave a pinned model with no price at all.
+    The suffix must look like a version (`-` followed by a digit) so that, say,
+    `mistral-small` never picks up `mistral-small-latest`'s price by accident --
+    a different release with genuinely different rates."""
     from src.llm_models import catalog
 
     entries = [m for m in catalog() if m["provider"] == provider]
@@ -92,20 +92,17 @@ def estimate_cost(provider: str, model: str, input_tokens: int, output_tokens: i
 def extract_usage(response: Any) -> tuple[int, int] | None:
     """Pull (input, output) token counts off a provider response.
 
-    Two shapes, both confirmed against the installed SDKs rather than assumed:
-    Anthropic reports usage.input_tokens/output_tokens, while OpenAI and every
-    OpenAI-compatible endpoint report usage.prompt_tokens/completion_tokens.
-    Returns None when a response carries no usage at all, so an endpoint that
-    omits it degrades to "not logged" instead of logging zeros."""
+    Every call on this path goes through the OpenAI SDK (OpenAI-compatible
+    endpoints only -- Mistral, OpenRouter, Ollama), which reports
+    usage.prompt_tokens/completion_tokens. Returns None when a response
+    carries no usage at all, so an endpoint that omits it degrades to
+    "not logged" instead of logging zeros."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return None
 
-    inp = getattr(usage, "input_tokens", None)
-    out = getattr(usage, "output_tokens", None)
-    if inp is None and out is None:
-        inp = getattr(usage, "prompt_tokens", None)
-        out = getattr(usage, "completion_tokens", None)
+    inp = getattr(usage, "prompt_tokens", None)
+    out = getattr(usage, "completion_tokens", None)
     if inp is None and out is None:
         return None
     return int(inp or 0), int(out or 0)

@@ -226,12 +226,13 @@ build_image() {
     # Wiped and re-pushed rather than rsync'd: rsync is not something this NAS's
     # ssh setup can be relied on for, and the directory is disposable anyway, so
     # "delete it and send the build context again" is both simpler and a
-    # stronger guarantee than --delete. Only requirements.txt and src/ are
-    # needed — see the Dockerfile, which deliberately bakes in nothing else.
+    # stronger guarantee than --delete. Only pyproject.toml, uv.lock and src/
+    # are needed — see the Dockerfile, which deliberately bakes in nothing else.
     echo "==> Syncing the build context to ${NAS_SSH}:${BUILD_PATH} (disposable -- never an instance dir)..."
     nas_ssh "rm -rf '${BUILD_PATH}' && mkdir -p '${BUILD_PATH}'"
     nas_put Dockerfile "${BUILD_PATH}/Dockerfile"
-    nas_put requirements.txt "${BUILD_PATH}/requirements.txt"
+    nas_put pyproject.toml "${BUILD_PATH}/pyproject.toml"
+    nas_put uv.lock "${BUILD_PATH}/uv.lock"
     nas_put_tree "${BUILD_PATH}" src
 
     nas_build_image_remote "${IMAGE_NAME}" "${BUILD_PATH}"

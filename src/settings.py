@@ -118,8 +118,8 @@ class SourcesConfig(_Lenient):
 
 
 class LLMConfig(_Lenient):
-    provider: str = "openai"
-    model: str = "gpt-5.6-luna"
+    provider: str = "openrouter"
+    model: str = "qwen/qwen3.7-flash"
     temperature: float = 0.3
     batch_size: int = 8
     # OpenRouter's `reasoning` control, for hybrid models that think by default

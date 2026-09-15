@@ -67,15 +67,15 @@ def test_load_config_schedule_file_merges_into_schedule(tmp_path):
 
 def test_load_config_llm_overrides_merge(tmp_path):
     (tmp_path / "config.yaml").write_text(
-        yaml.dump({"llm": {"provider": "openai", "model": "gpt-4o-mini"}})
+        yaml.dump({"llm": {"provider": "openrouter", "model": "qwen/qwen3.7-flash"}})
     )
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "llm_overrides.yaml").write_text(
-        yaml.dump({"llm": {"provider": "anthropic", "model": "claude-haiku-4-5"}})
+        yaml.dump({"llm": {"provider": "mistral", "model": "mistral-large-latest"}})
     )
     config = load_config(tmp_path / "config.yaml")
-    assert config["llm"]["provider"] == "anthropic"
-    assert config["llm"]["model"] == "claude-haiku-4-5"
+    assert config["llm"]["provider"] == "mistral"
+    assert config["llm"]["model"] == "mistral-large-latest"
 
 
 def test_load_config_missing_file_raises(tmp_path):

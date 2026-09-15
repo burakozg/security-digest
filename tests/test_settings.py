@@ -12,7 +12,7 @@ def test_validate_config_accepts_empty_dict():
     """Matches the previous .get(..., default) behavior -- a config missing
     everything must not fail validation, since every field has a default."""
     settings = validate_config({})
-    assert settings.llm.provider == "openai"
+    assert settings.llm.provider == "openrouter"
     assert settings.retry.max_retries == 3
 
 
@@ -24,7 +24,7 @@ def test_validate_config_accepts_realistic_config():
             "seen_retention_days": 14,
             "rss": [{"name": "Krebs on Security", "url": "https://krebsonsecurity.com/feed/"}],
         },
-        "llm": {"provider": "anthropic", "model": "claude-haiku-4-5", "temperature": 0.3},
+        "llm": {"provider": "mistral", "model": "mistral-large-latest", "temperature": 0.3},
         "digests": [{"title": "Security Digest", "sections": ["news", "thought_leadership"]}],
         "schedule": {"enabled": True, "hour": 7, "minute": 0, "timezone": "Europe/Stockholm"},
         "delivery": {
@@ -33,7 +33,7 @@ def test_validate_config_accepts_realistic_config():
         },
     }
     settings = validate_config(config)
-    assert settings.llm.provider == "anthropic"
+    assert settings.llm.provider == "mistral"
     assert settings.sources.rss[0].name == "Krebs on Security"
     assert settings.digests[0].title == "Security Digest"
     assert settings.delivery.email.from_ == "a@b.com"
@@ -50,8 +50,8 @@ def test_validate_config_ignores_unknown_fields():
     """extra="allow": config.yaml's on-disk shape must not need to change --
     an unrecognised field (e.g. one this model hasn't been taught about yet)
     must not break validation."""
-    settings = validate_config({"some_future_field": "value", "llm": {"provider": "openai"}})
-    assert settings.llm.provider == "openai"
+    settings = validate_config({"some_future_field": "value", "llm": {"provider": "mistral"}})
+    assert settings.llm.provider == "mistral"
 
 
 def test_settings_model_defaults_are_self_consistent():

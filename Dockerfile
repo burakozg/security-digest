@@ -1,13 +1,27 @@
 FROM python:3.13-slim
 
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+# uv itself, pinned to a known release rather than whatever pip resolves.
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
+
 WORKDIR /app
 
 # The instance's files are bind-mounted flat into /app, so /app *is* the
 # instance root here -- unlike a local checkout, where it's instances/<name>.
 ENV DIGEST_ROOT=/app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --- dependency layer ---------------------------------------------------
+# `package = false` in pyproject.toml (src/ has no __init__.py and isn't an
+# importable package -- it runs in place via `python -m src.main`), so there's
+# no separate --no-install-project pass: this one `uv sync` installs exactly
+# the locked dependencies into /app/.venv and nothing else.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
 
 # Deliberately no config.yaml/sources.yaml/schedule.txt/prompts baked in: one
 # image serves every instance (see instances/), and each supplies its own copies
@@ -16,6 +30,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # a silent, wrong fallback whenever a mount is misconfigured; with none baked,
 # load_config() raises a clear "Config not found" instead.
 COPY src/ src/
+
+ENV PATH="/app/.venv/bin:${PATH}"
 
 # Run as non-root. data/ and output/ are typically host bind mounts (see
 # docker-compose.yml, deploy.sh) whose owning UID/GID on the host is unknown at

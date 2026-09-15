@@ -1,15 +1,15 @@
-"""Curated OpenAI / Anthropic / Mistral / OpenRouter models for admin UI and validation.
+"""Curated Mistral / OpenRouter models for admin UI and validation.
+
+Only open-weight models, reached via Mistral's own API or OpenRouter, are
+selectable here -- Anthropic and OpenAI (direct or "via OpenRouter") are not
+usable providers in this app.
 
 Prices are approximate list USD per 1M tokens (input / output); they change on
-provider sites -- use for comparison only, not billing. OpenAI and Anthropic
-entries verified 2026-07-13, Mistral entries 2026-07-27, OpenRouter entries
-2026-08-04, by fetching current
+provider sites -- use for comparison only, not billing. Mistral entries
+verified 2026-07-27, OpenRouter entries 2026-08-04, by fetching current
 model lists/pricing directly from the providers (not from training-data memory,
 which goes stale). Review roughly every 3 months -- prompt for a refresh:
 "Refresh the model catalog in src/llm_models.py per task 3.7 in IMPROVEMENTS.md."
-
-Note: Claude Sonnet 5's list price is $3.00/$15.00 per 1M tokens; an
-introductory $2.00/$10.00 rate applies through 2026-08-31.
 
 Mistral entries use the "-latest" aliases rather than dated ids
 (mistral-small-2603, mistral-medium-2604, mistral-large-2512 as of 2026-07-27)
@@ -53,13 +53,6 @@ def catalog() -> list[dict[str, Any]]:
     """Provider + model list for admin dropdown (recommended = good default for batch digest work)."""
     # Fields: input_usd_per_mtok, output_usd_per_mtok (USD per 1M tokens), price_tier 1-4
     return [
-        {"provider": "anthropic", "id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "recommended": True, "input_usd_per_mtok": 1.00, "output_usd_per_mtok": 5.00, "price_tier": 1},
-        {"provider": "anthropic", "id": "claude-sonnet-5", "label": "Claude Sonnet 5", "recommended": True, "input_usd_per_mtok": 3.00, "output_usd_per_mtok": 15.00, "price_tier": 2},
-        {"provider": "anthropic", "id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "recommended": False, "input_usd_per_mtok": 3.00, "output_usd_per_mtok": 15.00, "price_tier": 2},
-        {"provider": "anthropic", "id": "claude-opus-4-8", "label": "Claude Opus 4.8", "recommended": False, "input_usd_per_mtok": 5.00, "output_usd_per_mtok": 25.00, "price_tier": 3},
-        {"provider": "openai", "id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "recommended": True, "input_usd_per_mtok": 1.00, "output_usd_per_mtok": 6.00, "price_tier": 1},
-        {"provider": "openai", "id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "recommended": True, "input_usd_per_mtok": 2.50, "output_usd_per_mtok": 15.00, "price_tier": 2},
-        {"provider": "openai", "id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "recommended": False, "input_usd_per_mtok": 5.00, "output_usd_per_mtok": 30.00, "price_tier": 3},
         {"provider": "mistral", "id": "mistral-small-latest", "label": "Mistral Small 4", "recommended": True, "input_usd_per_mtok": 0.15, "output_usd_per_mtok": 0.60, "price_tier": 1},
         {"provider": "mistral", "id": "mistral-large-latest", "label": "Mistral Large 3", "recommended": False, "input_usd_per_mtok": 0.50, "output_usd_per_mtok": 1.50, "price_tier": 1},
         {"provider": "mistral", "id": "mistral-medium-latest", "label": "Mistral Medium 3.5", "recommended": False, "input_usd_per_mtok": 1.50, "output_usd_per_mtok": 7.50, "price_tier": 2},
@@ -69,8 +62,6 @@ def catalog() -> list[dict[str, Any]]:
         {"provider": "openrouter", "id": "qwen/qwen3.8-27b", "label": "Qwen3.8 27B", "recommended": False, "input_usd_per_mtok": 0.45, "output_usd_per_mtok": 3.20, "price_tier": 2},
         {"provider": "openrouter", "id": "deepseek/deepseek-chat-v3.1", "label": "DeepSeek V3.1", "recommended": True, "input_usd_per_mtok": 0.25, "output_usd_per_mtok": 0.95, "price_tier": 1},
         {"provider": "openrouter", "id": "google/gemini-2.5-flash", "label": "Gemini 2.5 Flash", "recommended": False, "input_usd_per_mtok": 0.30, "output_usd_per_mtok": 2.50, "price_tier": 1},
-        {"provider": "openrouter", "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5 (via OpenRouter)", "recommended": False, "input_usd_per_mtok": 1.00, "output_usd_per_mtok": 5.00, "price_tier": 1},
-        {"provider": "openrouter", "id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5 (via OpenRouter)", "recommended": False, "input_usd_per_mtok": 2.00, "output_usd_per_mtok": 10.00, "price_tier": 2},
     ]
 
 
@@ -93,14 +84,6 @@ def is_valid_model(provider: str, model_id: str) -> bool:
         return True
 
     try:
-        if provider == "anthropic":
-            from anthropic import Anthropic
-            Anthropic().models.retrieve(model_id)
-            return True
-        if provider == "openai":
-            from openai import OpenAI
-            OpenAI().models.retrieve(model_id)
-            return True
         if provider in ("mistral", "openrouter"):
             import os
 
