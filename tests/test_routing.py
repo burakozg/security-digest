@@ -172,7 +172,6 @@ def test_admin_save_round_trips_routing(tmp_path, monkeypatch):
     """Load the sources editor, save it back untouched, and the routing must be
     identical. Dropping `digests` here would leave every digest with no sources,
     which does not error -- it silently means "accept every feed"."""
-    monkeypatch.setenv("DIGEST_ADMIN_TOKEN", "t")
     monkeypatch.setenv("DIGEST_ROOT", str(tmp_path))
 
     import importlib
@@ -195,17 +194,16 @@ def test_admin_save_round_trips_routing(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
     client = TestClient(web.app)
-    head = {"X-Admin-Token": "t"}
 
-    before = client.get("/admin/sources", headers=head).json()
+    before = client.get("/admin/sources").json()
     assert {f["name"]: f["digests"] for f in before["rss"]} == {
         "Feed A": ["D One", "D Two"], "Feed B": [],
     }
 
-    saved = client.post("/admin/sources", headers=head, json={"rss": before["rss"]}).json()
+    saved = client.post("/admin/sources", json={"rss": before["rss"]}).json()
     assert saved["ok"], saved
 
-    after = client.get("/admin/sources", headers=head).json()
+    after = client.get("/admin/sources").json()
     assert {f["name"]: f["digests"] for f in after["rss"]} == \
            {f["name"]: f["digests"] for f in before["rss"]}
 

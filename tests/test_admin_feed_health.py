@@ -7,9 +7,6 @@ from fastapi.testclient import TestClient
 
 from src.feed_health import record
 
-TOKEN = "test-admin-token"
-AUTH = {"X-Admin-Token": TOKEN}
-
 KREBS = "https://krebsonsecurity.com/feed/"
 DEAD = "https://threatpost.com/feed/"
 
@@ -29,12 +26,11 @@ def client(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
     monkeypatch.setattr(web, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(src.db, "DB_PATH", tmp_path / "digest.db")
-    monkeypatch.setenv("DIGEST_ADMIN_TOKEN", TOKEN)
     return TestClient(web.app)
 
 
 def _feeds(client):
-    return {f["url"]: f for f in client.get("/admin/sources", headers=AUTH).json()["rss"]}
+    return {f["url"]: f for f in client.get("/admin/sources").json()["rss"]}
 
 
 def test_a_feed_with_no_record_reports_unknown_not_healthy(client):
@@ -56,11 +52,6 @@ def test_the_recorded_outcome_reaches_the_column(client, tmp_path):
     assert "8 items" in feeds[KREBS]["health"]["summary"]
     assert feeds[DEAD]["health"]["status"] == "error"
     assert feeds[DEAD]["health"]["summary"].startswith("HTTP 404 · failing")
-
-
-def test_health_endpoints_require_the_admin_token(client):
-    assert client.get("/admin/sources").status_code == 401
-    assert client.post("/admin/sources/check", json={}).status_code == 401
 
 
 # --- check now --------------------------------------------------------------
@@ -87,7 +78,7 @@ def probe(monkeypatch):
 
 
 def test_checking_everything_probes_every_feed_and_reports_the_failures(client, probe):
-    r = client.post("/admin/sources/check", headers=AUTH, json={})
+    r = client.post("/admin/sources/check", json={})
     data = r.json()
     assert r.status_code == 200 and data["ok"] is True
     assert sorted(probe) == sorted([KREBS, DEAD])
@@ -97,20 +88,20 @@ def test_checking_everything_probes_every_feed_and_reports_the_failures(client, 
 
 
 def test_checking_one_feed_probes_only_that_one(client, probe):
-    r = client.post("/admin/sources/check", headers=AUTH, json={"url": KREBS})
+    r = client.post("/admin/sources/check", json={"url": KREBS})
     assert probe == [KREBS]
     assert r.json()["message"] == "Checked 1 feed(s) — all fetched."
 
 
 def test_a_check_persists_so_the_column_survives_a_reload(client, probe):
-    client.post("/admin/sources/check", headers=AUTH, json={})
+    client.post("/admin/sources/check", json={})
     assert _feeds(client)[DEAD]["health"]["status"] == "error"
 
 
 def test_the_check_will_not_fetch_a_url_that_is_not_configured(client, probe):
     """Otherwise an authenticated admin endpoint becomes a request forwarder
     that fetches whatever the caller names."""
-    r = client.post("/admin/sources/check", headers=AUTH,
+    r = client.post("/admin/sources/check",
                     json={"url": "http://169.254.169.254/latest/meta-data/"})
     assert r.status_code == 404
     assert probe == []
@@ -124,9 +115,8 @@ def test_checking_an_instance_with_no_feeds_says_so(tmp_path, monkeypatch, probe
     (tmp_path / "data").mkdir()
     monkeypatch.setattr(web, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(src.db, "DB_PATH", tmp_path / "digest.db")
-    monkeypatch.setenv("DIGEST_ADMIN_TOKEN", TOKEN)
 
-    r = TestClient(web.app).post("/admin/sources/check", headers=AUTH, json={})
+    r = TestClient(web.app).post("/admin/sources/check", json={})
     assert r.json() == {"ok": True, "message": "No feeds to check.", "health": {}}
 
 
@@ -151,10 +141,9 @@ def test_the_quiet_threshold_is_configurable_per_instance(tmp_path, monkeypatch)
         }))
         monkeypatch.setattr(web, "PROJECT_ROOT", root)
         monkeypatch.setattr(src.db, "DB_PATH", root / "digest.db")
-        monkeypatch.setenv("DIGEST_ADMIN_TOKEN", TOKEN)
         record([{"url": KREBS, "name": "Slow blog", "status": "ok", "items": 95,
                  "newest": old}], root / "digest.db")
-        return TestClient(web.app).get("/admin/sources", headers=AUTH).json()["rss"][0]
+        return TestClient(web.app).get("/admin/sources").json()["rss"][0]
 
     assert build(21)["health"]["status"] == "ok"
     assert build(14)["health"]["status"] == "quiet"

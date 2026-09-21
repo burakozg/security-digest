@@ -225,30 +225,6 @@
   <script>
     let llmCatalog = [];
 
-    function getAdminToken(forcePrompt) {
-      let t = localStorage.getItem('digestAdminToken');
-      if (!t || forcePrompt) {
-        t = (prompt('Enter admin token (from DIGEST_ADMIN_TOKEN in .env):') || '').trim();
-        if (t) localStorage.setItem('digestAdminToken', t);
-      }
-      return t || '';
-    }
-
-    async function adminFetch(url, opts) {
-      opts = opts || {};
-      opts.headers = Object.assign({}, opts.headers, { 'X-Admin-Token': getAdminToken(false) });
-      let r = await fetch(url, opts);
-      if (r.status === 401) {
-        localStorage.removeItem('digestAdminToken');
-        const t = getAdminToken(true);
-        if (t) {
-          opts.headers['X-Admin-Token'] = t;
-          r = await fetch(url, opts);
-        }
-      }
-      return r;
-    }
-
     function escAttr(s) {
       return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
     }
@@ -281,7 +257,7 @@
     }
 
     async function loadLlm() {
-      const r = await adminFetch('/admin/llm');
+      const r = await fetch('/admin/llm');
       const data = await r.json();
       llmCatalog = data.models || [];
       const prov = document.getElementById('llmProvider');
@@ -314,7 +290,7 @@
       try {
         const custom = document.getElementById('llmCustomModel').value.trim();
         const model = custom || document.getElementById('llmModel').value;
-        const r = await adminFetch('/admin/llm', {
+        const r = await fetch('/admin/llm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -343,7 +319,7 @@
       btn.disabled = true;
       msg.textContent = '';
       try {
-        const r = await adminFetch('/admin/flush', { method: 'POST' });
+        const r = await fetch('/admin/flush', { method: 'POST' });
         const data = await r.json();
         msg.textContent = data.ok ? 'Database flushed.' : (data.message || data.detail || 'Error');
         msg.className = 'msg ' + (data.ok ? 'success' : 'error');
@@ -387,7 +363,7 @@
     }
 
     async function loadPrompts() {
-      const r = await adminFetch('/admin/prompts');
+      const r = await fetch('/admin/prompts');
       const data = await r.json();
       const { prompts } = data;
       renderVocabulary(data);
@@ -417,7 +393,7 @@
     }
 
     async function loadPromptContent(name) {
-      const r = await adminFetch('/admin/prompts/' + name);
+      const r = await fetch('/admin/prompts/' + name);
       const data = await r.json();
       const ta = document.getElementById('edit-' + name);
       if (ta) ta.value = data.content || '';
@@ -431,7 +407,7 @@
       msgEl.textContent = '';
       msgEl.className = 'msg';
       try {
-        const r = await adminFetch('/admin/prompts/' + name, {
+        const r = await fetch('/admin/prompts/' + name, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content: ta.value }),
@@ -595,7 +571,7 @@
       msg.className = 'msg';
       msg.textContent = 'Fetching' + (url ? ' the feed' : ' every feed') + '…';
       try {
-        const r = await adminFetch('/admin/sources/check', {
+        const r = await fetch('/admin/sources/check', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(url ? { url: url } : {}),
@@ -647,7 +623,7 @@
       const msg = document.getElementById('feedsMsg');
       msg.style.display = 'none';
       try {
-        const r = await adminFetch('/admin/sources');
+        const r = await fetch('/admin/sources');
         const data = await r.json();
         const banner = document.getElementById('sourcesOverridesBanner');
         if (banner) banner.style.display = data.overrides_active ? 'block' : 'none';
@@ -675,7 +651,7 @@
       const msg = document.getElementById('routingMsg');
       msg.style.display = 'none';
       try {
-        const r = await adminFetch('/admin/routing');
+        const r = await fetch('/admin/routing');
         if (!r.ok) { card.style.display = 'none'; return; }
         const data = await r.json();
         const cats = data.categories || [];
@@ -789,7 +765,7 @@
       msg.textContent = '';
       msg.className = 'msg';
       try {
-        const r = await adminFetch('/admin/sources/reset-overrides', { method: 'POST' });
+        const r = await fetch('/admin/sources/reset-overrides', { method: 'POST' });
         const data = await r.json();
         msg.textContent = data.ok ? (data.message || 'Done.') : (data.message || data.detail || 'Error');
         msg.className = 'msg ' + (data.ok ? 'success' : 'error');
@@ -813,7 +789,7 @@
       msg.className = 'msg';
       btn.disabled = true;
       try {
-        const r = await adminFetch('/admin/sources', {
+        const r = await fetch('/admin/sources', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rss: collectFeedsFromDom() }),
@@ -961,7 +937,7 @@
         frequency: u.frequency || 'daily', send_day: u.send_day || DEFAULT_SEND_DAY,
       }));
       try {
-        const r = await adminFetch('/admin/users', {
+        const r = await fetch('/admin/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ users: payload }),
@@ -981,7 +957,7 @@
     async function loadUsers() {
       const msg = document.getElementById('usersMsg');
       try {
-        const r = await adminFetch('/admin/users');
+        const r = await fetch('/admin/users');
         const data = await r.json();
         if (Array.isArray(data.frequencies) && data.frequencies.length) FREQUENCIES = data.frequencies;
         if (Array.isArray(data.days) && data.days.length) DAYS = data.days;
@@ -1115,7 +1091,7 @@
       const msg = document.getElementById('topicsMsg');
       msg.style.display = 'none';
       try {
-        const r = await adminFetch('/admin/topics');
+        const r = await fetch('/admin/topics');
         const data = await r.json();
         const box = document.getElementById('topicsContainer');
         box.innerHTML = '';
@@ -1145,7 +1121,7 @@
       }
       btn.disabled = true;
       try {
-        const r = await adminFetch('/admin/topics', {
+        const r = await fetch('/admin/topics', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ topics: topics }),
@@ -1167,7 +1143,7 @@
     async function initPanel() {
       let show = { recipients: true, topics: true, feeds: true };
       try {
-        const r = await adminFetch('/admin/panel');
+        const r = await fetch('/admin/panel');
         if (r.ok) show = Object.assign(show, await r.json());
       } catch (e) { /* on failure show everything rather than hide a working card */ }
 

@@ -38,8 +38,7 @@ INSTANCE=news PORT=8081 docker compose up web
 ```
 
 Adding an instance is copying a directory under `instances/`, giving it its own
-`.env` (**with its own `DIGEST_ADMIN_TOKEN`** — sharing one lets either admin
-panel drive the other), and deploying it with `--instance <name>`.
+`.env`, and deploying it with `--instance <name>`.
 
 ## Quick start
 
@@ -48,8 +47,7 @@ uv sync
 
 cp .env.example .env
 # then edit .env: set the key for your llm.provider (MISTRAL_API_KEY /
-# OPENROUTER_API_KEY), SMTP_* if using
-# email delivery, and DIGEST_ADMIN_TOKEN (generate with: openssl rand -hex 32)
+# OPENROUTER_API_KEY), SMTP_* if using email delivery
 
 DIGEST_ROOT=instances/security .venv/bin/uvicorn src.web.app:app --reload --port 8080
 # -> http://localhost:8080/  (dashboard)
@@ -75,7 +73,7 @@ All paths below are relative to an instance directory (`instances/<name>/`).
 | `sources.yaml` | RSS feed list (name + URL) |
 | `topics.yaml` | **Seed** topic list for a brand-new instance; the live list is `data/topics.yaml`, written by the admin panel |
 | `schedule.txt` | Daily run time (`enabled`, `hour`, `minute`, `timezone`) -- the only place schedule settings live; do not add a `schedule:` block to `config.yaml`, it would be silently overridden |
-| `.env` | Secrets: `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `SMTP_USER`/`SMTP_PASSWORD`, `DIGEST_ADMIN_TOKEN`, `VAULT_COUCHDB_URL`/`VAULT_COUCHDB_PASSWORD` |
+| `.env` | Secrets: `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `SMTP_USER`/`SMTP_PASSWORD`, `VAULT_COUCHDB_URL`/`VAULT_COUCHDB_PASSWORD` |
 
 ### Multiple readers in one instance
 
@@ -155,9 +153,10 @@ feed or topic no digest routes to, and any topic addressed to an unknown
 recipient. Removing a recipient in the admin panel reports which topics it
 orphaned.
 
-Readers in one instance share a database, a schedule, an admin token and a web
-UI. That is a deliberate trade: real isolation between readers means a separate
-instance.
+Readers in one instance share a database, a schedule, and a web UI (gated by
+a shared reverse-proxy login now, not a per-instance admin token — see the
+sibling `homelab-auth` project). That is a deliberate trade: real isolation
+between readers means a separate instance.
 
 ### Clustering: one story, many sources
 
@@ -375,10 +374,11 @@ was *emailed*; the publication date was never stored.
 
 ### Admin authentication
 
-`/admin/*` endpoints and `POST /run` require an `X-Admin-Token` header matching
-`DIGEST_ADMIN_TOKEN` in `.env`. Without that variable set, admin actions are
-disabled (fail closed) -- generate one with `openssl rand -hex 32`. The
-browser prompts for the token once and caches it in `localStorage`.
+Neither `/admin/*` (page and API) nor `POST /run` is gated by this app -- both
+deployed instances sit behind a reverse proxy (Traefik) that requires login
+for `PathPrefix('/admin')` and `Path('/run')` before a request ever reaches
+here. `/status` and the other read-only endpoints remain open by design,
+unchanged.
 
 ## Running tests
 
@@ -507,11 +507,12 @@ deploy can't silently clobber edits made from the browser:
 build anything itself. `./deploy` ships it to `/share/Container/daily-digests/`
 and runs `docker compose up -d` there over ssh. One command, no UI step.
 
-The tracked file ships with placeholder qnet IPs; `./deploy render` fills them in
-from `.deploy.env` (see `deploy.env.example`) and writes
-`deploy-out/docker-compose.nas.yml`, which is the copy that gets shipped. Real
-addresses never land in a tracked file. Secrets stay out of the YAML too: each
-instance reads its own `.env` from its own directory via `env_file:`.
+`./deploy render` writes `deploy-out/docker-compose.nas.yml`, the copy that
+actually gets shipped -- there's nothing left for it to substitute, since
+neither instance carries a per-instance address any more, but the step still
+runs so a token left unfilled by mistake would be caught rather than shipped.
+Secrets stay out of the YAML too: each instance reads its own `.env` from its
+own directory via `env_file:`.
 
 ```bash
 ./deploy                        # ship, then compose up -d
@@ -523,12 +524,13 @@ instance reads its own `.env` from its own directory via `env_file:`.
 changed, and picks up `config.yaml`/`.env` changes for free -- a container is
 *created* fresh, which is what a plain `docker restart` never did.
 
-Each instance runs on a static LAN IP on the `qnet-static-eth1-dc7e3a` network
-(see `APP_LAN_IP_SECURITY` in `deploy.env.example`) rather than a NAT'd port
-mapping, so it's reached directly at `http://<that IP>:8080/` -- **not**
-`http://<nas host>:8089/` from the manual-CLI instructions above. Expect the NAS
-host itself to be unable to reach those addresses: a host cannot talk to its own
-macvlan children, so probe from another machine (`./deploy check` does).
+Neither instance has a LAN address of its own. Both join `homelab-internal`, a
+plain bridge shared with Traefik, and are reached only through Traefik's
+`security-digest.servers.zou` / `news-digest.servers.zou` routes -- **not**
+`http://<nas host>:8089/` from the manual-CLI instructions above, and not a
+qnet IP. `./deploy check` probes each instance from the NAS itself over
+`homelab-internal`, by asking Traefik's own container to reach it by name --
+there is no LAN-facing address left to curl directly.
 
 #### Why this stopped being a Container Station "Application"
 
@@ -549,9 +551,12 @@ Three things made that a bad trade, and none of them was compensated:
 - surviving a NAS reboot comes from `restart: unless-stopped`, which the docker
   daemon honours whoever started the container -- not from being an Application.
 
-Container Station still owns the qnet macvlan network this joins as
-`external: true`, and still lists these containers under **Containers** for logs
-and start/stop. Only the Application wrapper is gone.
+These containers now join `homelab-internal` (`external: true` in the compose
+file) rather than Container Station's qnet macvlan -- a plain bridge created
+once and shared with Traefik via `docker network connect`, not a
+QNAP-managed network. Container Station still lists the containers themselves
+under **Containers** for logs and start/stop; only the Application wrapper
+and the qnet membership are gone.
 
 ## Architecture
 

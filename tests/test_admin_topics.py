@@ -7,8 +7,6 @@ from fastapi.testclient import TestClient
 
 from src.fetcher import load_config
 
-TOKEN = "test-admin-token"
-
 
 # --- live file vs seed -------------------------------------------------------
 
@@ -54,15 +52,12 @@ def client(tmp_path, monkeypatch):
          "lang": "en", "country": "US"},
     ]}))
     monkeypatch.setattr(web, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("DIGEST_ADMIN_TOKEN", TOKEN)
     return TestClient(web.app)
 
 
-AUTH = {"X-Admin-Token": TOKEN}
-
 
 def test_get_topics_returns_the_configured_list_with_digest_routing(client):
-    r = client.get("/admin/topics", headers=AUTH)
+    r = client.get("/admin/topics")
     assert r.status_code == 200
     data = r.json()
     assert [t["name"] for t in data["topics"]] == ["Acme"]
@@ -71,13 +66,8 @@ def test_get_topics_returns_the_configured_list_with_digest_routing(client):
     assert data["topics"][0]["digests"] == ["Watch"]
 
 
-def test_topics_endpoints_require_the_admin_token(client):
-    assert client.get("/admin/topics").status_code == 401
-    assert client.post("/admin/topics", json={"topics": []}).status_code == 401
-
-
 def test_save_topics_writes_the_live_file_and_takes_effect(client, tmp_path):
-    r = client.post("/admin/topics", headers=AUTH, json={"topics": [
+    r = client.post("/admin/topics", json={"topics": [
         {"name": "Vattenfall", "queries": ["\"Vattenfall\""], "context": "Energy co.",
          "lang": "sv", "country": "SE"},
     ]})
@@ -93,12 +83,12 @@ def test_save_topics_writes_the_live_file_and_takes_effect(client, tmp_path):
     }]
 
     # And that file is what the app now serves.
-    after = client.get("/admin/topics", headers=AUTH).json()
+    after = client.get("/admin/topics").json()
     assert [t["name"] for t in after["topics"]] == ["Vattenfall"]
 
 
 def test_save_topics_rejects_a_missing_name(client):
-    r = client.post("/admin/topics", headers=AUTH, json={"topics": [{"context": "no name"}]})
+    r = client.post("/admin/topics", json={"topics": [{"context": "no name"}]})
     assert r.status_code == 400
     assert "name is required" in r.json()["message"]
 
@@ -106,7 +96,7 @@ def test_save_topics_rejects_a_missing_name(client):
 def test_save_topics_rejects_duplicate_names(client):
     """Two topics with one name produce two feed sets routing to the same
     digests: duplicated items and doubled LLM spend."""
-    r = client.post("/admin/topics", headers=AUTH, json={"topics": [
+    r = client.post("/admin/topics", json={"topics": [
         {"name": "Acme"}, {"name": "acme"},
     ]})
     assert r.status_code == 400
@@ -115,7 +105,7 @@ def test_save_topics_rejects_duplicate_names(client):
 
 def test_save_topics_accepts_newline_separated_queries(client, tmp_path):
     """The textarea submits one query per line."""
-    r = client.post("/admin/topics", headers=AUTH, json={"topics": [
+    r = client.post("/admin/topics", json={"topics": [
         {"name": "Acme", "queries": '"Acme"\nAcme lawsuit\n\n'},
     ]})
     assert r.status_code == 200
@@ -126,11 +116,11 @@ def test_save_topics_accepts_newline_separated_queries(client, tmp_path):
 def test_saving_an_empty_feed_list_is_refused(client):
     """The RSS editor renders one blank row when there are no feeds, so a stray
     Save would otherwise write an override emptying the whole feed list."""
-    r = client.post("/admin/sources", headers=AUTH, json={"rss": []})
+    r = client.post("/admin/sources", json={"rss": []})
     assert r.status_code == 400
     assert "empty feed list" in r.json()["message"]
 
 
 def test_an_empty_feed_list_can_still_be_saved_deliberately(client):
-    r = client.post("/admin/sources", headers=AUTH, json={"rss": [], "allow_empty": True})
+    r = client.post("/admin/sources", json={"rss": [], "allow_empty": True})
     assert r.status_code == 200 and r.json()["ok"] is True

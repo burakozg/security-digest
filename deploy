@@ -332,19 +332,53 @@ REMOTE
 # from instead.
 # ---------------------------------------------------------------------------
 do_render() {
-  local exprs=() inst upper ip
-  for inst in $(ls -1 instances 2>/dev/null); do
-    upper="$(echo "$inst" | tr '[:lower:]' '[:upper:]')"
-    eval "ip=\${APP_LAN_IP_${upper}:-}"
-    [ -n "$ip" ] || die "APP_LAN_IP_${upper} is not set in .deploy.env — see deploy.env.example.
-     Without it the rendered compose file would keep a placeholder address and
-     the container would come up unreachable."
-    exprs+=("s#APP_LAN_IP_${upper}_PLACEHOLDER#${ip}#")
-    # Pin the MAC too, derived from that address — see nas_mac_for_ip.
-    exprs+=("s#APP_MAC_${upper}_PLACEHOLDER#$(nas_mac_for_ip "${ip}")#")
+  # Neither instance has a placeholder left to fill — both join
+  # homelab-internal, a fixed external network name, not a per-instance LAN
+  # address. nas_render still runs (rather than a plain cp) so it keeps
+  # checking that nothing else in the file was left as an unfilled token; a
+  # true no-op expression is passed because nas_render's sed invocation
+  # requires at least one (zero expressions makes the template's own
+  # filename become sed's script argument, not a file to read).
+  nas_render "$NAS_COMPOSE" "$RENDERED" "s/^(.*)$/\1/"
+}
+
+# No LAN IP to curl from the Mac for either instance any more — probed by
+# asking Traefik, which shares homelab-internal with both containers, to
+# reach them by container name instead. Same contract as
+# nas_probe/nas_wait_reachable (same messages, same non-zero-on-failure).
+do_probe_via_traefik() {
+  local inst="$1" container="$2"
+  if nas_ssh "'${NAS_DOCKER_BIN}' exec traefik-1 wget -q -O /dev/null --timeout=5 http://${container}:8080/status" 2>/dev/null; then
+    echo "✓ ${inst}: up → http://${container}:8080 (via Traefik's internal network)"
+  else
+    echo "✗ ${inst}: no answer at http://${container}:8080/status (via Traefik's internal network)"
+    return 1
+  fi
+}
+
+do_wait_reachable_via_traefik() {
+  local inst="$1" container="$2" tries=36 i=1
+  while [ "$i" -le "$tries" ]; do
+    do_probe_via_traefik "$inst" "$container" >/dev/null 2>&1 && { do_probe_via_traefik "$inst" "$container"; return 0; }
+    [ "$i" = 1 ] && echo "  … ${inst} not up yet; waiting"
+    sleep 5
+    i=$((i + 1))
   done
-  [ ${#exprs[@]} -gt 0 ] || die "No instances under instances/ — nothing to render."
-  nas_render "$NAS_COMPOSE" "$RENDERED" "${exprs[@]}"
+  do_probe_via_traefik "$inst" "$container" || {
+    echo "    Still unreachable after $((tries * 5))s."
+    return 1
+  }
+}
+
+# Instance name -> its container_name in docker-compose.nas.yml. A lookup
+# table rather than a naming convention, since "security" -> "security-digest-web"
+# isn't a mechanical transform of the instance name alone.
+container_for_instance() {
+  case "$1" in
+    security) echo "security-digest-web" ;;
+    news)     echo "news-digest-web" ;;
+    *) die "No known container for instance '$1' — add it to container_for_instance() in ./deploy." ;;
+  esac
 }
 
 do_apply() {
@@ -354,33 +388,21 @@ do_apply() {
   # actually changed, and leaves the rest running.
   nas_compose_up
   echo
-  # Verify over the LAN, not just "docker says healthy" — those are different
-  # claims and only this one is the user's. See nas_wait_reachable.
+  # Verify via Traefik's own path to each instance, not just "docker says
+  # healthy" — those are different claims and only this one is the user's.
   local failed=0
   for inst in ${INSTANCES}; do
-    local upper ip
-    upper="$(echo "$inst" | tr '[:lower:]' '[:upper:]')"
-    eval "ip=\${APP_LAN_IP_${upper}:-}"
-    [ -n "$ip" ] || continue
-    nas_wait_reachable "${inst}" "http://${ip}:8080" "/status" || failed=1
+    do_wait_reachable_via_traefik "${inst}" "$(container_for_instance "${inst}")" || failed=1
   done
-  [ "$failed" = 0 ] || die "Deployed, but not reachable over the LAN — see above."
+  [ "$failed" = 0 ] || die "Deployed, but not reachable via Traefik — see above."
 }
 
 do_check() {
   nas_require_reachable
-  local inst upper ip
+  local inst
   for inst in ${INSTANCES}; do
-    upper="$(echo "$inst" | tr '[:lower:]' '[:upper:]')"
-    eval "ip=\${APP_LAN_IP_${upper}:-}"
-    if [ -z "$ip" ]; then
-      echo "? ${inst}: APP_LAN_IP_${upper} not set — nothing to probe"
-      continue
-    fi
-    nas_probe "${inst}" "http://${ip}:8080" "/status" || true
+    do_probe_via_traefik "${inst}" "$(container_for_instance "${inst}")" || true
   done
-  echo "  (Probing from the NAS itself would fail regardless — a host cannot reach"
-  echo "   its own macvlan children. Run this from the Mac, on the LAN or VPN.)"
 }
 
 do_ship() {
@@ -406,7 +428,7 @@ Usage: ./deploy [verb] [--instance NAME]... [--build-on mac|nas] [--no-apply]
   ship      reconcile, build, ship the image, sync config and the compose file
   apply     docker compose up -d on the NAS
   render    write deploy-out/docker-compose.nas.yml with the real IPs and stop
-  check     probe each instance's /status on its qnet address
+  check     probe each instance's /status via Traefik's internal network
 
   --instance NAME   just this instance (repeatable). Default: all of instances/.
   --build-on mac    cross-compile linux/amd64 here and stream the image over (default)

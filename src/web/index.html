@@ -248,30 +248,6 @@
   </div>
 
   <script>
-    function getAdminToken(forcePrompt) {
-      let t = localStorage.getItem('digestAdminToken');
-      if (!t || forcePrompt) {
-        t = (prompt('Enter admin token (from DIGEST_ADMIN_TOKEN in .env):') || '').trim();
-        if (t) localStorage.setItem('digestAdminToken', t);
-      }
-      return t || '';
-    }
-
-    async function adminFetch(url, opts) {
-      opts = opts || {};
-      opts.headers = Object.assign({}, opts.headers, { 'X-Admin-Token': getAdminToken(false) });
-      let r = await fetch(url, opts);
-      if (r.status === 401) {
-        localStorage.removeItem('digestAdminToken');
-        const t = getAdminToken(true);
-        if (t) {
-          opts.headers['X-Admin-Token'] = t;
-          r = await fetch(url, opts);
-        }
-      }
-      return r;
-    }
-
     function escapeHtml(str) {
       if (str == null) return '';
       const s = String(str);
@@ -302,7 +278,7 @@
 
     async function triggerRun(slug) {
       const url = slug ? `/run?digest=${encodeURIComponent(slug)}` : '/run';
-      const r = await adminFetch(url, { method: 'POST' });
+      const r = await fetch(url, { method: 'POST' });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.message || data.detail || 'Run request failed');
       return data;

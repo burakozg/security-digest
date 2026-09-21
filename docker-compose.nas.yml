@@ -19,19 +19,16 @@
 #     `restart: unless-stopped` below, which the docker daemon honours whoever
 #     started the container — not from being an Application.
 #
-# Container Station still owns the qnet macvlan network this joins as
-# `external: true`, and still shows these containers under Containers. Only the
-# Application wrapper is gone.
+# Container Station still owns the daemon and still shows these containers
+# under Containers. Only the Application wrapper is gone. Neither instance
+# joins the qnet macvlan any more — see the central-login note further down
+# for why — so this repo no longer has a stake in that network.
 #
 # `name:` pins the compose project rather than letting it default to the
 # directory name. It is the ORIGINAL Container Station project name on purpose:
 # the running containers carry com.docker.compose.project=daily-digests, so
 # keeping it means `compose up -d` adopts and recreates them in place instead of
 # trying to create a second pair alongside.
-#
-# The two static qnet IPs are placeholder tokens here and are filled in from
-# .deploy.env when `./deploy` renders this file — real addresses never land in a
-# tracked file. The rendered copy goes to deploy-out/ and is what gets shipped.
 #
 # What is mounted, and why:
 #   config.yaml, sources.yaml, schedule.txt  read-only; deployed from the repo.
@@ -43,40 +40,24 @@
 #   prompts/      read-write: the admin panel's prompt editor writes in place.
 #   output/       read-write: rendered digest HTML for the dashboard.
 #
-# With their own LAN addresses the containers are reached directly on port 8080,
-# so there is no `ports:` mapping. Expect the NAS host itself to be unable to
-# reach them: a host cannot talk to its own macvlan children.
+# Neither instance has a LAN address of its own any more — part of the
+# central-login migration (see homelab-auth/README.md). Both join
+# homelab-internal, a plain bridge shared with Traefik via `docker network
+# connect`, and are reached only through Traefik's security-digest.servers.zou
+# / news-digest.servers.zou routes. Each instance's own DIGEST_ADMIN_TOKEN
+# check has been removed from the app entirely: Traefik's forwardAuth gates
+# /admin* before either container ever sees the request, including the page
+# shell itself (GET /admin used to have no auth dependency at all — a real
+# gap, closed for free by this migration rather than needing its own fix).
 #
-# Secrets stay out of this file. Each instance reads its own .env from its
-# directory via env_file, each with its OWN DIGEST_ADMIN_TOKEN -- sharing one
-# lets either admin panel drive the other. Generate: openssl rand -hex 32
+# Secrets stay out of this file. Each instance still reads its own .env from
+# its directory via env_file, for OPENROUTER_API_KEY etc.
 #
 # One-time setup per instance (the container runs as UID 1000 and nothing here
 # chmods, so `./deploy` verifies these and tells you if they need fixing by hand):
 #   cd /share/Container/<name>-digest && mkdir -p data output/web prompts \
 #     && chmod -R 777 data output prompts
 #
-# MAC ADDRESSES ARE PINNED, and that is load-bearing. These containers sit on a
-# macvlan in a /25; anything on another subnet reaches them through a
-# router. Docker assigns a random MAC on every `create`, so each recreate used to
-# change it — and the router went on answering for the OLD MAC until its
-# neighbour entry aged out. The result is a container that is "Up (healthy)",
-# has correct routes, can reach the internet, and is unreachable inbound: the
-# healthcheck runs inside the container against localhost and cannot see the
-# problem. It self-heals once the container sends anything outbound, which makes
-# it maddening to diagnose because it comes right on its own.
-#
-# Pinned to docker's own convention, 02:42 followed by the four address octets,
-# so each is stable, derivable and cannot collide with another container's.
-# Set PER NETWORK rather than on the service: a service-level `mac_address:`
-# applies to only one of a container's interfaces, so on a service that later
-# gains a second network it silently pins the wrong one. (That is not
-# hypothetical — it happened to the podcast agent, where it landed on the
-# internal bridge and left the LAN-facing interface randomised.)
-#
-# Placeholders here, filled in by `./deploy` from .deploy.env alongside the IPs:
-# the derived value encodes the real address (its last four octets ARE the
-# address), so it must no more be tracked in git than the address itself.
 
 name: daily-digests
 
@@ -97,9 +78,7 @@ services:
       - /share/Container/security-digest/.env
     command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
     networks:
-      qnet-static-eth1-dc7e3a:
-        ipv4_address: APP_LAN_IP_SECURITY_PLACEHOLDER
-        mac_address: APP_MAC_SECURITY_PLACEHOLDER
+      homelab-internal: {}
 
   news-digest:
     image: security-digest
@@ -117,10 +96,11 @@ services:
       - /share/Container/news-digest/.env
     command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
     networks:
-      qnet-static-eth1-dc7e3a:
-        ipv4_address: APP_LAN_IP_NEWS_PLACEHOLDER
-        mac_address: APP_MAC_NEWS_PLACEHOLDER
+      homelab-internal: {}
 
 networks:
-  qnet-static-eth1-dc7e3a:
+  # Created once, shared with Traefik via `docker network connect` — not
+  # created by this compose file, which only joins it. See
+  # homelab-auth/README.md.
+  homelab-internal:
     external: true

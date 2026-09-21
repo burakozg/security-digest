@@ -3,7 +3,6 @@
 import datetime
 import logging
 import os
-import secrets
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
@@ -13,7 +12,7 @@ from typing import Any
 import yaml
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Body, FastAPI, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from src.dedupe import clear_seen
@@ -69,20 +68,6 @@ if os.environ.get("DIGEST_LOG_HEALTHCHECKS", "") not in ("1", "true", "yes"):
     # added here survives rather than being reset by that config.
     logging.getLogger("uvicorn.access").addFilter(_QuietLivenessProbeFilter())
 
-
-def require_admin(x_admin_token: str = Header(default="")) -> None:
-    """Gate admin endpoints behind a shared token. Fails closed if unset."""
-    expected = os.environ.get("DIGEST_ADMIN_TOKEN", "")
-    if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Admin disabled: set DIGEST_ADMIN_TOKEN in .env to enable admin actions",
-        )
-    if not secrets.compare_digest(x_admin_token, expected):
-        raise HTTPException(status_code=401, detail="Invalid or missing admin token")
-
-
-admin_auth = Depends(require_admin)
 
 _scheduler: BackgroundScheduler | None = None
 
@@ -286,7 +271,7 @@ def _sources_overrides_active() -> bool:
     return isinstance(raw, dict) and isinstance(raw.get("rss"), list)
 
 
-@app.get("/admin/sources", dependencies=[admin_auth])
+@app.get("/admin/sources")
 def admin_get_sources():
     """RSS feeds from merged config (base sources.yaml + optional overrides)."""
     config = _load_config()
@@ -322,7 +307,7 @@ def admin_get_sources():
     }
 
 
-@app.post("/admin/sources", dependencies=[admin_auth])
+@app.post("/admin/sources")
 def admin_save_sources(body: dict = Body(...)):
     """Replace rss list in writable sources overrides file."""
     rss = body.get("rss")
@@ -385,7 +370,7 @@ def admin_save_sources(body: dict = Body(...)):
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
-@app.post("/admin/sources/check", dependencies=[admin_auth])
+@app.post("/admin/sources/check")
 def admin_check_sources(body: dict = Body(default={})):
     """Fetch the configured feeds right now and report what came back.
 
@@ -433,7 +418,7 @@ def admin_check_sources(body: dict = Body(default={})):
     }
 
 
-@app.post("/admin/sources/reset-overrides", dependencies=[admin_auth])
+@app.post("/admin/sources/reset-overrides")
 def admin_reset_sources_overrides():
     """Remove sources overrides file so feeds come from sources.yaml again."""
     path = _sources_overrides_path()
@@ -446,7 +431,7 @@ def admin_reset_sources_overrides():
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
-@app.get("/admin/topics", dependencies=[admin_auth])
+@app.get("/admin/topics")
 def admin_get_topics():
     """Tracked topics from merged config (topics.yaml + optional overrides).
 
@@ -477,7 +462,7 @@ def admin_get_topics():
     return {"topics": out, "users": config.get("users") or []}
 
 
-@app.post("/admin/topics", dependencies=[admin_auth])
+@app.post("/admin/topics")
 def admin_save_topics(body: dict = Body(...)):
     """Replace the topic list in the writable topics overrides file."""
     topics = body.get("topics")
@@ -541,7 +526,7 @@ def admin_save_topics(body: dict = Body(...)):
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
-@app.get("/admin/panel", dependencies=[admin_auth])
+@app.get("/admin/panel")
 def admin_panel():
     """Which admin cards apply to this instance.
 
@@ -569,7 +554,7 @@ def admin_panel():
     }
 
 
-@app.get("/admin/routing", dependencies=[admin_auth])
+@app.get("/admin/routing")
 def admin_routing():
     """The feed x category grid, and which pairs reach no digest.
 
@@ -587,7 +572,7 @@ def admin_routing():
     return matrix
 
 
-@app.get("/admin/users", dependencies=[admin_auth])
+@app.get("/admin/users")
 def admin_get_users():
     """Recipients of this instance, with the topics each currently receives."""
     config = _load_config()
@@ -609,7 +594,7 @@ def admin_get_users():
     }
 
 
-@app.post("/admin/users", dependencies=[admin_auth])
+@app.post("/admin/users")
 def admin_save_users(body: dict = Body(...)):
     """Replace the recipient list in the writable users overrides file."""
     users = body.get("users")
@@ -698,7 +683,7 @@ def admin_save_users(body: dict = Body(...)):
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
-@app.post("/run", dependencies=[admin_auth])
+@app.post("/run")
 def trigger_run(digest: str | None = Query(None)):
     """Run pipeline. Omit ?digest= to run all digests; use ?digest=security-digest for one."""
     global _run_in_progress
@@ -751,7 +736,7 @@ def admin_page():
     return html.read_text()
 
 
-@app.post("/admin/flush", dependencies=[admin_auth])
+@app.post("/admin/flush")
 def admin_flush():
     """Clear the seen store so items can be processed again."""
     try:
@@ -761,7 +746,7 @@ def admin_flush():
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
-@app.post("/admin/vault/resync", dependencies=[admin_auth])
+@app.post("/admin/vault/resync")
 def admin_vault_resync(body: dict = Body(default={})):
     """Re-project every note under output/vault/ into the vault's CouchDB.
 
@@ -790,7 +775,7 @@ def admin_vault_resync(body: dict = Body(default={})):
     return {"ok": True, **result}
 
 
-@app.get("/admin/llm", dependencies=[admin_auth])
+@app.get("/admin/llm")
 def admin_get_llm():
     """Current LLM settings and model catalog for admin UI."""
     config = _load_config()
@@ -803,7 +788,7 @@ def admin_get_llm():
     }
 
 
-@app.post("/admin/llm", dependencies=[admin_auth])
+@app.post("/admin/llm")
 def admin_set_llm(body: dict = Body(...)):
     """Update llm.provider and llm.model in writable LLM overrides file."""
     provider = (body.get("provider") or "").strip().lower()
@@ -844,7 +829,7 @@ def admin_set_llm(body: dict = Body(...)):
         return JSONResponse({"ok": False, "message": str(e)}, status_code=500)
 
 
-@app.get("/admin/prompts", dependencies=[admin_auth])
+@app.get("/admin/prompts")
 def admin_list_prompts():
     """Prompt files, plus the vocabulary the API will enforce on their output.
 
@@ -862,7 +847,7 @@ def admin_list_prompts():
     }
 
 
-@app.get("/admin/prompts/{name}", dependencies=[admin_auth])
+@app.get("/admin/prompts/{name}")
 def admin_get_prompt(name: str):
     if name not in ALLOWED_PROMPTS:
         return JSONResponse({"error": "Not found"}, status_code=404)
@@ -872,7 +857,7 @@ def admin_get_prompt(name: str):
     return {"name": name, "content": path.read_text(encoding="utf-8")}
 
 
-@app.post("/admin/prompts/{name}", dependencies=[admin_auth])
+@app.post("/admin/prompts/{name}")
 def admin_save_prompt(name: str, body: dict = Body(...)):
     content = body.get("content", "")
     if name not in ALLOWED_PROMPTS:
