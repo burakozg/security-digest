@@ -348,10 +348,10 @@ do_render() {
 # nas_probe/nas_wait_reachable (same messages, same non-zero-on-failure).
 do_probe_via_traefik() {
   local inst="$1" container="$2"
-  if nas_ssh "'${NAS_DOCKER_BIN}' exec traefik-1 wget -q -O /dev/null --timeout=5 http://${container}:8080/status" 2>/dev/null; then
-    echo "✓ ${inst}: up → http://${container}:8080 (via Traefik's internal network)"
+  if nas_ssh "'${NAS_DOCKER_BIN}' exec traefik-1 wget -q -O /dev/null --timeout=5 http://${container}:80/status" 2>/dev/null; then
+    echo "✓ ${inst}: up → http://${container}:80 (via Traefik's internal network)"
   else
-    echo "✗ ${inst}: no answer at http://${container}:8080/status (via Traefik's internal network)"
+    echo "✗ ${inst}: no answer at http://${container}:80/status (via Traefik's internal network)"
     return 1
   fi
 }

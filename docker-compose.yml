@@ -39,7 +39,7 @@ services:
     build: .
     env_file: instances/${INSTANCE:-security}/.env
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-80}:80"
     volumes:
       - ./instances/${INSTANCE:-security}/config.yaml:/app/config.yaml:ro
       - ./instances/${INSTANCE:-security}/sources.yaml:/app/sources.yaml
@@ -48,4 +48,4 @@ services:
       - ./instances/${INSTANCE:-security}/data:/app/data
       - ./instances/${INSTANCE:-security}/output:/app/output
       - ./instances/${INSTANCE:-security}/prompts:/app/prompts
-    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 80

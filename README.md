@@ -392,13 +392,13 @@ uv run pytest
 ### Docker Compose (general)
 
 ```bash
-docker compose up -d web                      # security instance on :8080
+docker compose up -d web                      # security instance on :80
 INSTANCE=news PORT=8081 docker compose up -d web
 INSTANCE=news docker compose run --rm digest  # one-off manual pipeline run
 ```
 
 `INSTANCE` (default `security`) picks which directory under `instances/` is
-mounted; `PORT` (default 8080) is the host port. Give each instance its own port.
+mounted; `PORT` (default 80) is the host port. Give each instance its own port.
 
 Don't run the `digest` service alongside `web` -- the web service's scheduler
 is the single production scheduler. The container runs as a non-root user; each
@@ -417,7 +417,7 @@ docker build -t security-digest .
 
 INSTANCE=security   # or news
 
-docker run -d -p 8089:8080 \
+docker run -d -p 8089:80 \
   -v $(pwd)/instances/$INSTANCE/config.yaml:/app/config.yaml:ro \
   -v $(pwd)/instances/$INSTANCE/sources.yaml:/app/sources.yaml:ro \
   -v $(pwd)/instances/$INSTANCE/topics.yaml:/app/topics.yaml:ro \
@@ -429,7 +429,7 @@ docker run -d -p 8089:8080 \
   --name $INSTANCE-digest-web \
   --restart unless-stopped \
   security-digest \
-  uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+  uvicorn src.web.app:app --host 0.0.0.0 --port 80
 ```
 
 The image bakes in no config at all — every instance file arrives by mount, and
@@ -438,7 +438,7 @@ missing mount therefore fails loudly with "Config not found" instead of falling
 back to some other instance's baked-in copy.
 
 Access at `http://<host>:8089/` (dashboard), `/history`, `/admin`. The
-container always listens on port 8080 internally; map whichever external port
+container always listens on port 80 internally; map whichever external port
 you want via `-p`.
 
 ### Remote deploy script (`./deploy`)

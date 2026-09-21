@@ -76,7 +76,7 @@ services:
       - /share/Container/security-digest/prompts:/app/prompts
     env_file:
       - /share/Container/security-digest/.env
-    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 80
     networks:
       homelab-internal: {}
 
@@ -94,7 +94,7 @@ services:
       - /share/Container/news-digest/prompts:/app/prompts
     env_file:
       - /share/Container/news-digest/.env
-    command: uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+    command: uvicorn src.web.app:app --host 0.0.0.0 --port 80
     networks:
       homelab-internal: {}
 
