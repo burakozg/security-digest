@@ -130,6 +130,24 @@ _LEADING = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 #: Trailing corporate suffixes, so "Mandiant" and "Mandiant Inc." agree.
 _TRAILING = re.compile(r"[\s,]+(inc|inc\.|llc|ltd|ltd\.|corp|corp\.|gmbh|plc)$", re.IGNORECASE)
 
+#: Known spelling variants that would otherwise canonicalize to two different
+#: keys. `canonical` only strips punctuation/whitespace noise around a name,
+#: never *inside* one, so "Hugging Face" and "HuggingFace" survive as two
+#: entities, and two topic notes, until named here. A short, curated list
+#: rather than stripping all internal whitespace -- that would also fuse
+#: unrelated things that happen to share a run-together/spaced-out spelling
+#: elsewhere in the corpus. Add a pair only once confirmed by hand to be the
+#: same thing; `homelab/vault-doctor.py` is what finds the candidates.
+#:
+#: Ported verbatim alongside `canonical` itself -- see this module's own note
+#: (and `podcast_agent/entities.py`'s) about why all three copies have to move
+#: together.
+_ALIASES = {
+    "huggingface": "hugging face",
+    "shiny hunters": "shinyhunters",
+    "threat locker": "threatlocker",
+}
+
 
 def canonical(name: str) -> str:
     """The key two spellings of the same thing must share.
@@ -150,7 +168,8 @@ def canonical(name: str) -> str:
         return f"cve-{match.group(1)}-{int(match.group(2)):04d}"
     text = _LEADING.sub("", text)
     text = _TRAILING.sub("", text)
-    return text.casefold().strip(" .,;:—-")
+    key = text.casefold().strip(" .,;:—-")
+    return _ALIASES.get(key, key)
 
 
 def display_name(surfaces: dict[str, int]) -> str:

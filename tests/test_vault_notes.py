@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from src.vault.text import canonical as ours_canonical
 from src.vault.text import slugify as ours_slugify
 from src.vault.notes import (
     KEY_PREFIX,
@@ -170,3 +171,43 @@ def test_our_slug_rule_matches_podcast_digests():
         "APT-29", "$pecial &chars!", "Anthropic", "NIS2", "MITRE ATT&CK",
     ):
         assert ours_slugify(name) == theirs(name), name
+
+
+def test_our_canonical_rule_matches_podcast_digests():
+    """Both applications key a topic by canonical(name). If these two ever
+    disagree about which spellings are the same thing, one entity gets two
+    notes in `99 topics/` -- exactly the failure `_ALIASES` exists to close
+    for the three pairs already found split that way (see
+    homelab/vault-doctor.py). Extracted from source and exec'd, same as
+    `test_our_slug_rule_matches_podcast_digests` above -- this asserts
+    against the canonical text, not a copy of it that could drift.
+    """
+    source = (
+        Path.home() / "projects" / "podcast-digest" / "podcast_agent" / "entities.py"
+    )
+    if not source.is_file():
+        pytest.skip("podcast-digest is not checked out next to this repo")
+
+    text = source.read_text(encoding="utf-8")
+    match = re.search(r"^def canonical\(.*?(?=\n\n\ndef |\Z)", text, re.DOTALL | re.MULTILINE)
+    assert match, "podcast-digest's canonical could not be located -- has it moved?"
+    cve = re.search(r"^_CVE = .*$", text, re.MULTILINE)
+    leading = re.search(r"^_LEADING = .*$", text, re.MULTILINE)
+    trailing = re.search(r"^_TRAILING = .*$", text, re.MULTILINE)
+    aliases = re.search(r"^_ALIASES = \{.*?\n\}", text, re.DOTALL | re.MULTILINE)
+    for pattern, label in ((cve, "_CVE"), (leading, "_LEADING"), (trailing, "_TRAILING"), (aliases, "_ALIASES")):
+        assert pattern, f"podcast-digest's {label} could not be located"
+
+    namespace: dict = {"re": re}
+    for pattern in (cve, leading, trailing, aliases):
+        exec(pattern.group(0), namespace)  # noqa: S102 -- our own repo's source
+    exec(match.group(0), namespace)  # noqa: S102
+    theirs = namespace["canonical"]
+
+    for name in (
+        "Volt Typhoon", "volt typhoon", "Mandiant Inc.", "The Shadow Brokers",
+        "Modbus.", "CVE-2026-01234", "cve 2026 1234", "Hugging Face",
+        "HuggingFace", "Shiny Hunters", "ShinyHunters", "Threat Locker",
+        "ThreatLocker", "Anthropic", "", "A" * 80,
+    ):
+        assert ours_canonical(name) == theirs(name), name
