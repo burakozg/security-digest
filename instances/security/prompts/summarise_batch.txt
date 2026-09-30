@@ -65,7 +65,9 @@ another story to use. Prefer 2-6 entities; return an empty list rather than padd
 with anything you are unsure of — a wrong name is worse than a missing one, because it
 silently links two unrelated stories together.
 
-Provide a summary, domain, category and entities for each item below, in the same order.
+Provide an id, summary, domain, category and entities for each item below. Set id to the
+item's number (the "Item N" label it was given) so your response can be matched back to
+the right item even if an entry is merged, skipped or reordered.
 (Response format is enforced by the API, not by these instructions.)
 
 ---

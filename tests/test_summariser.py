@@ -15,6 +15,7 @@ from src.summariser import (
     categories,
     fallback_category,
     _get_client,
+    _index_batch_results,
     _parse_batch_response,
     domains,
     prompt_vocabulary_drift,
@@ -347,6 +348,69 @@ def test_summarise_batch_falls_back_per_item_for_a_malformed_entry():
     assert len(out) == 2
     assert out[0]["summary"] == "desc A"          # fell back to its own description
     assert out[1]["summary"] == "Good"            # the usable entry survived
+
+
+# id-based realignment ------------------------------------------------------
+# Regression coverage for headline/summary mismatches: a batch response is not
+# reliably positional, and blind zip-by-index silently hands later items a
+# summary written for a different article once the model merges, skips or
+# reorders one entry.
+
+def test_index_batch_results_realigns_a_skipped_entry_by_id():
+    """The model drops item 2 entirely (e.g. folded into another entry's
+    write-up) but still tags the survivors correctly -- without id-based
+    matching, item 3's summary would land on item 2 and item 3 would go
+    missing instead."""
+    results = [
+        {"id": 1, "summary": "S1", "category": "news"},
+        {"id": 3, "summary": "S3", "category": "news"},
+    ]
+    out = _index_batch_results(results, count=3)
+    assert out[0]["summary"] == "S1"
+    assert out[1] is None
+    assert out[2]["summary"] == "S3"
+
+
+def test_index_batch_results_realigns_a_reordered_entry_by_id():
+    results = [
+        {"id": 2, "summary": "S2", "category": "news"},
+        {"id": 1, "summary": "S1", "category": "news"},
+    ]
+    out = _index_batch_results(results, count=2)
+    assert out[0]["summary"] == "S1"
+    assert out[1]["summary"] == "S2"
+
+
+def test_index_batch_results_falls_back_positionally_without_ids():
+    """An endpoint that doesn't enforce the schema (see _unwrap_list) may omit
+    id entirely -- must reproduce the pre-id positional behaviour exactly."""
+    results = [
+        {"summary": "S1", "category": "news"},
+        {"summary": "S2", "category": "news"},
+    ]
+    out = _index_batch_results(results, count=2)
+    assert [r["summary"] for r in out] == ["S1", "S2"]
+
+
+def test_summarise_batch_realigns_a_shifted_response():
+    """End-to-end: three items, the model's response for the middle one is
+    missing, and the outer two are still matched to their own summaries
+    rather than to each other's."""
+    content = (
+        '[{"id": 1, "summary": "About A", "category": "news"}, '
+        '{"id": 3, "summary": "About C", "category": "news"}]'
+    )
+    client = _CapturingOpenAI(content=content)
+    items = [
+        {"title": "A", "description": "desc A"},
+        {"title": "B", "description": "desc B"},
+        {"title": "C", "description": "desc C"},
+    ]
+    out = summarise_batch(items, client, {"llm": {"provider": "openrouter"}})
+
+    assert out[0]["title"] == "A" and out[0]["summary"] == "About A"
+    assert out[2]["title"] == "C" and out[2]["summary"] == "About C"
+    assert out[1]["title"] == "B" and out[1]["summary"] == "desc B"  # fell back, not "About C"
 
 
 def test_summarise_batch_coerces_a_category_outside_the_vocabulary():

@@ -232,7 +232,7 @@ def cluster_chars(config: dict[str, Any]) -> int | None:
 
 def _result_schema(
     *, array: bool, allowed: list[str], allowed_domains: list[str] | None = None,
-    with_entities: bool = False,
+    with_entities: bool = False, with_id: bool = False,
 ) -> dict[str, Any]:
     """JSON schema for a single {summary, category[, domain]} result, or
     (array=True) an object wrapping an array of them for the batch call.
@@ -241,12 +241,20 @@ def _result_schema(
 
     `domain` is only present when the instance defines domains -- the category
     says which section an item sits in, the domain says which digest it belongs
-    to, and an instance with one digest per category needs only the first."""
-    properties: dict[str, Any] = {
-        "summary": {"type": "string"},
-        "category": {"type": "string", "enum": allowed},
-    }
-    required = ["summary", "category"]
+    to, and an instance with one digest per category needs only the first.
+
+    `id` (with_id=True, the batch call only) asks the model to echo back each
+    item's 1-based position. A batch response is otherwise matched to its
+    inputs by array position alone, which breaks the moment the model merges,
+    skips or reorders one entry -- and once it does, every later item silently
+    receives someone else's summary with nothing to detect it. See
+    _index_batch_results, which is what actually uses this field."""
+    properties: dict[str, Any] = {}
+    if with_id:
+        properties["id"] = {"type": "integer"}
+    properties["summary"] = {"type": "string"}
+    properties["category"] = {"type": "string", "enum": allowed}
+    required = (["id"] if with_id else []) + ["summary", "category"]
     if allowed_domains:
         properties["domain"] = {"type": "string", "enum": allowed_domains}
         required.append("domain")
@@ -725,6 +733,37 @@ def _parse_batch_response(content: str) -> list[dict[str, str]]:
     return _unwrap_list(content, "items") or []
 
 
+def _index_batch_results(results: list[Any], count: int) -> list[Any]:
+    """Place batch results by their declared `id` rather than by array
+    position.
+
+    A batch response is not reliably positional: given items that look alike
+    (two write-ups of a similar story is exactly the case clustering feeds
+    this call) the model will sometimes merge, skip or reorder one -- and once
+    that happens, zip-by-index quietly hands every later item a summary
+    written for a different article, with no error anywhere to say so. `id`
+    lets a shifted response be caught and re-aligned instead. An entry with no
+    usable id (an endpoint that doesn't enforce the schema, or the old
+    behaviour) falls back to filling remaining slots in the order it arrived,
+    which reproduces the previous positional matching exactly."""
+    slots: list[Any] = [None] * count
+    leftover: list[Any] = []
+    for pos, r in enumerate(results):
+        idx = r.get("id") if isinstance(r, dict) else None
+        if isinstance(idx, int) and 1 <= idx <= count and slots[idx - 1] is None:
+            if idx - 1 != pos:
+                log.warning("Batch response item %d arrived at position %d; realigned by id",
+                            idx, pos + 1)
+            slots[idx - 1] = r
+        else:
+            leftover.append(r)
+    it = iter(leftover)
+    for i in range(count):
+        if slots[i] is None:
+            slots[i] = next(it, None)
+    return slots
+
+
 def summarise_batch(
     items: list[dict[str, Any]], client: Any, config: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -736,9 +775,9 @@ def summarise_batch(
         client, config, prompt,
         _result_schema(array=True, allowed=categories(config),
                        allowed_domains=domains(config),
-                       with_entities=extract_entities(config)), kind="batch"
+                       with_entities=extract_entities(config), with_id=True), kind="batch"
     )
-    results = _parse_batch_response(content)
+    results = _index_batch_results(_parse_batch_response(content), len(items))
 
     output = []
     for i, item in enumerate(items):
