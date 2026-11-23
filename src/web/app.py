@@ -3,8 +3,10 @@
 import datetime
 import logging
 import os
+import socket
 import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -72,9 +74,33 @@ if os.environ.get("DIGEST_LOG_HEALTHCHECKS", "") not in ("1", "true", "yes"):
 _scheduler: BackgroundScheduler | None = None
 
 
+def _wait_for_network(host: str, timeout: float = 1200.0, interval: float = 15.0) -> bool:
+    """Block until `host` resolves, or `timeout` seconds pass. True if it did.
+
+    After a NAS reboot the container's scheduler can fire before DNS works: a
+    07:00 run found "Temporary failure in name resolution", aborted, and the day's
+    digest was simply lost -- nothing re-ran it. Waiting here costs nothing when
+    the network is up and saves the run when it is not. Deliberately a preflight
+    and not a retry of a failed run: a run that dies part-way may already have
+    mailed some digests, and re-running it would send those twice."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            socket.getaddrinfo(host, None)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            log.warning("DNS not ready for %s, waiting before the scheduled run", host)
+            time.sleep(interval)
+
+
 def _scheduled_run():
     """Called by scheduler at configured time."""
     log.info("Scheduled run triggered")
+    host = ((_load_config().get("delivery") or {}).get("email") or {}).get("smtp_host")
+    if host and not _wait_for_network(host):
+        log.error("DNS still not working for %s after waiting; running anyway", host)
     _run_background(digest_slug=None)
 
 

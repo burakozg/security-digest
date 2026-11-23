@@ -208,3 +208,34 @@ def test_also_to_adds_to_digest_own_to(smtp_password):
     got = _also({"Security Digest": ["extra@example.com"]},
                 {"title": "Security Digest", "to": "her@example.com"})
     assert got == ["her@example.com", "extra@example.com"]
+
+
+# scheduled-run network preflight -------------------------------------------
+
+def test_wait_for_network_returns_once_host_resolves(monkeypatch):
+    from src.web import app as web
+    calls = {"n": 0}
+
+    def flaky(host, port):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError("Temporary failure in name resolution")
+        return [("ok",)]
+
+    monkeypatch.setattr(web.socket, "getaddrinfo", flaky)
+    monkeypatch.setattr(web.time, "sleep", lambda s: None)
+    assert web._wait_for_network("smtp.example.com") is True
+    assert calls["n"] == 3
+
+
+def test_wait_for_network_gives_up_after_timeout(monkeypatch):
+    from src.web import app as web
+
+    def dead(host, port):
+        raise OSError("down")
+
+    clock = iter(range(0, 10000, 100))
+    monkeypatch.setattr(web.socket, "getaddrinfo", dead)
+    monkeypatch.setattr(web.time, "sleep", lambda s: None)
+    monkeypatch.setattr(web.time, "monotonic", lambda: next(clock))
+    assert web._wait_for_network("smtp.example.com", timeout=300) is False
