@@ -8,6 +8,7 @@ from src.retry import retry
 from src.utils import PROJECT_ROOT, slug
 import logging
 import os
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,6 +21,10 @@ except ImportError:
     pass
 
 log = logging.getLogger(__name__)
+
+# Loose on purpose (typos, not RFC 5322); recipients.py can't be imported here
+# without a cycle (recipients -> weekly -> delivery).
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def deliver_previous(
@@ -126,6 +131,37 @@ def _deliver_file(content: str, delivery: dict, title: str | None = None) -> Non
     log.info("Wrote digest to %s", path)
 
 
+def _with_extra_recipients(
+    to_addrs: list[str], also_to: object, digest_cfg: dict | None
+) -> list[str]:
+    """Append addresses from delivery.email.also_to for this digest's title.
+
+    also_to maps a digest title to extra recipients, e.g.
+    {"Security Digest": ["a@x.com"]}. It lives in data/delivery_overrides.yaml
+    (git-ignored, never deployed) so the addresses stay out of the tracked
+    config. It adds to the base recipients rather than replacing them, and a
+    digest with no entry is untouched. Titles match case-insensitively."""
+    if not isinstance(also_to, dict):
+        return to_addrs
+    title = str((digest_cfg or {}).get("title", "")).strip().casefold()
+    extra: list[str] = []
+    for key, value in also_to.items():
+        if str(key).strip().casefold() != title:
+            continue
+        extra += value.split(",") if isinstance(value, str) else [str(v) for v in value or []]
+    result = list(to_addrs)
+    seen = {a.casefold() for a in result}
+    for addr in (a.strip() for a in extra):
+        if not addr or addr.casefold() in seen:
+            continue
+        if not _EMAIL_RE.match(addr):
+            log.warning("Ignoring invalid also_to address for %r", title)
+            continue
+        seen.add(addr.casefold())
+        result.append(addr)
+    return result
+
+
 def _resolve_email_config(
     config: dict, digest_cfg: dict | None = None
 ) -> tuple[str, int, str, list[str], str, str]:
@@ -170,6 +206,8 @@ def _resolve_email_config(
             "DIGEST_EMAIL_TO in .env (preferred -- .env is neither committed nor "
             "overwritten by a deploy), or delivery.email.from/to in config.yaml."
         )
+
+    to_addrs = _with_extra_recipients(to_addrs, email_cfg.get("also_to"), digest_cfg)
 
     user = os.environ.get("SMTP_USER") or email_cfg.get("smtp_user") or from_addr
     password = os.environ.get("SMTP_PASSWORD")

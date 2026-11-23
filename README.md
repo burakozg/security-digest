@@ -201,6 +201,26 @@ deliberately conservative — a surviving duplicate is a visible annoyance, whil
 two distinct events merged deletes one of them with nothing recording that it
 happened.
 
+### Forwarding some digests to extra addresses
+
+To send selected digests to an additional address (say Security and AI Security
+but not AI News), create `data/delivery_overrides.yaml` on the instance. It is
+git-ignored and never touched by a deploy, so the address appears in no tracked
+file:
+
+```yaml
+email:
+  also_to:
+    "Security Digest": [other@example.com]
+    "AI Security Digest": [other@example.com]
+```
+
+Keys are digest titles (case-insensitive). The addresses are *added* to the
+normal recipients; a digest with no entry is unchanged. Invalid and duplicate
+addresses are skipped. On the NAS the file is
+`/share/Container/security-digest/data/delivery_overrides.yaml`; it is read on
+each run, so no restart is needed.
+
 ### Where panel-managed lists live
 
 Topics and recipients are edited in the admin panel and stored under `data/`,

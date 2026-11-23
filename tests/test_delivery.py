@@ -170,3 +170,41 @@ def test_the_subject_names_the_period_when_one_is_given(monkeypatch):
 
 def test_a_daily_subject_is_unchanged(monkeypatch):
     assert "(" not in _subject(monkeypatch)
+
+
+# also_to: hidden extra recipients per digest ------------------------------
+# Lives in data/delivery_overrides.yaml (git-ignored), so addresses stay out of
+# the tracked config. Adds to the base recipients; never replaces them.
+
+def _also(mapping, digest_cfg):
+    cfg = {"delivery": {"email": {**BASE_EMAIL_CONFIG["delivery"]["email"], "also_to": mapping}}}
+    return _recipients(cfg, digest_cfg)
+
+
+def test_also_to_adds_for_named_digest(smtp_password):
+    got = _also({"Security Digest": ["extra@example.com"]}, {"title": "Security Digest"})
+    assert got == ["fallback@example.com", "extra@example.com"]
+
+
+def test_also_to_leaves_other_digests_alone(smtp_password):
+    got = _also({"Security Digest": ["extra@example.com"]}, {"title": "AI News"})
+    assert got == ["fallback@example.com"]
+
+
+def test_also_to_matches_title_case_insensitively_and_accepts_string(smtp_password):
+    got = _also({"security digest": "a@example.com, b@example.com"}, {"title": "Security Digest"})
+    assert got == ["fallback@example.com", "a@example.com", "b@example.com"]
+
+
+def test_also_to_dedupes_and_skips_invalid(smtp_password):
+    got = _also(
+        {"Security Digest": ["FALLBACK@example.com", "not-an-email", "x@example.com"]},
+        {"title": "Security Digest"},
+    )
+    assert got == ["fallback@example.com", "x@example.com"]
+
+
+def test_also_to_adds_to_digest_own_to(smtp_password):
+    got = _also({"Security Digest": ["extra@example.com"]},
+                {"title": "Security Digest", "to": "her@example.com"})
+    assert got == ["her@example.com", "extra@example.com"]
