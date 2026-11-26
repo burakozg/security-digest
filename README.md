@@ -1,5 +1,12 @@
 # Security Digest
 
+> **Where this runs now (2026-11):** a Debian Docker server, no longer the QNAP
+> NAS. Where this document says "NAS" or `qnet`, read *deploy server* and its LAN
+> macvlan; directories, addresses and network names did not change. SSH is on the
+> standard port, docker is `/usr/bin/docker`, and there is no Container Station.
+> QNAP-specific steps and measurements below are history. See
+> `homelab/server/README.md`.
+
 Fetches news, summarises and categorises each item with an LLM (Mistral or
 OpenRouter -- open-weight models only), groups the results into one or more digests, and delivers
 them by email (or file/console) on a daily schedule. Includes a small FastAPI
